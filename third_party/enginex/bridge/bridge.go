@@ -98,7 +98,7 @@ func ensureWritableEngineLibrary(mount string) bool {
 		}
 	}
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", lower, upper, work)
-	if syscall.Mount("overlay", libDir, "overlay", 0, opts) != nil {
+	if overlayMount(libDir, opts) != nil {
 		return false
 	}
 	return syscall.Statfs(libDir, &libSt) == nil && libSt.Flags&unix_ST_RDONLY == 0

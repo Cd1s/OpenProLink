@@ -65,6 +65,7 @@ type track struct {
 type sim struct {
 	usb, denonDrive, cache string
 	simIP, denonIP         net.IP
+	deck                   net.IP // a real deck on the LAN: packets go there, NFS answers on portmap 111
 	nfs                    *prolink.NFSServer
 	discovery              *prolink.Discovery
 	tracks                 []track
@@ -96,10 +97,16 @@ func main() {
 	simIP := flag.String("sim-ip", "127.0.0.2", "address the simulated CDJ-3000 sends from and serves NFS on")
 	denonIP := flag.String("denon-ip", "127.0.0.1", "address EngineX's Pro DJ Link receiver listens on")
 	denonEmpty := flag.Bool("denon-empty", false, "Denon drive holds no rekordbox export of its own")
+	deck := flag.String("deck", "", "IPv4 of a real deck on the LAN to play to (needs -sim-ip set to this host's LAN address)")
 	flag.Parse()
 	s, err := newSim(*usb, net.ParseIP(*simIP).To4(), net.ParseIP(*denonIP).To4())
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *deck != "" {
+		if s.deck = net.ParseIP(*deck).To4(); s.deck == nil {
+			log.Fatal("-deck must be IPv4")
+		}
 	}
 	s.denonEmpty = *denonEmpty
 	s.playing = true
@@ -215,7 +222,12 @@ func pwv7(a *rekordbox.Analysis) [][3]byte {
 
 func (s *sim) start(ctx context.Context) error {
 	s.nfs = &prolink.NFSServer{Root: s.usb}
-	if err := s.nfs.Listen(net.JoinHostPort(s.simIP.String(), "0")); err != nil {
+	host, portmap := s.simIP.String(), "0"
+	if s.deck != nil {
+		// A real player asks the standard portmapper port; macOS lets a non-root user bind 111 only on the wildcard address.
+		host, portmap = "0.0.0.0", "111"
+	}
+	if err := s.nfs.Listen(net.JoinHostPort(host, portmap)); err != nil {
 		return fmt.Errorf("nfs: %w", err)
 	}
 	if err := os.MkdirAll(s.denonDrive, 0o755); err != nil {
@@ -279,10 +291,18 @@ func (s *sim) log(dir string, port int, kind string, b []byte) {
 	}
 }
 
+// target is where the virtual CDJ's packets go: the real deck, or the in-process receiver.
+func (s *sim) target() net.IP {
+	if s.deck != nil {
+		return s.deck
+	}
+	return s.denonIP
+}
+
 func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 	defer conn.Close()
 	send := func(port int, kind string, b []byte) {
-		if _, err := conn.WriteToUDP(b, &net.UDPAddr{IP: s.denonIP, Port: port}); err == nil {
+		if _, err := conn.WriteToUDP(b, &net.UDPAddr{IP: s.target(), Port: port}); err == nil {
 			s.log("CDJ → Denon", port, kind, b)
 		}
 	}
@@ -333,7 +353,7 @@ func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 				lastKeep = now
 			}
 			if posPkt != nil {
-				if _, err := conn.WriteToUDP(posPkt, &net.UDPAddr{IP: s.denonIP, Port: 50001}); err == nil {
+				if _, err := conn.WriteToUDP(posPkt, &net.UDPAddr{IP: s.target(), Port: 50001}); err == nil {
 					if lastPosLog.IsZero() || now.Sub(lastPosLog) >= time.Second {
 						s.log("CDJ → Denon", 50001, "absolute pos 0x0b", posPkt)
 						lastPosLog = now
