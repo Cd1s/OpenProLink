@@ -22,26 +22,31 @@ import (
 // ST_RDONLY from statvfs(3); syscall has no portable name for it.
 const unix_ST_RDONLY = 0x1
 
+var errNoLocalExport = fmt.Errorf("no local Rekordbox export: %w", os.ErrNotExist)
+
 // ReadLibrary reads the drive's own export plus the libraries staged from
 // Pioneer players on the LAN (#59).
 func ReadLibrary(ctx context.Context, mount string) (*rekordbox.Library, error) {
+	l, _, err := readLibrary(ctx, mount)
+	return l, err
+}
+func readLibrary(ctx context.Context, mount string) (*rekordbox.Library, bool, error) {
 	l, err := readExport(ctx, mount)
-	stagedOnly := errors.Is(err, os.ErrNotExist)
+	stagedOnly := errors.Is(err, errNoLocalExport)
 	if stagedOnly {
 		l = &rekordbox.Library{}
 		err = nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if l != nil {
 		mergeStaged(mount, l)
 	}
-	// A missing/broken staged export must not publish an empty source library.
 	if stagedOnly && len(l.Tracks) == 0 && len(l.Playlists) == 0 {
-		return nil, os.ErrNotExist
+		return nil, false, os.ErrNotExist
 	}
-	return l, nil
+	return l, stagedOnly, nil
 }
 
 func readExport(ctx context.Context, mount string) (*rekordbox.Library, error) {
@@ -62,7 +67,7 @@ func readExport(ctx context.Context, mount string) (*rekordbox.Library, error) {
 		}
 		return rekordbox.ReadSQLite(ctx, r.FullPath(rel), nil)
 	}
-	return nil, os.ErrNotExist
+	return nil, errNoLocalExport
 }
 
 // ensureWritableEngineLibrary mounts an ext4-backed overlay onto "<mount>/Engine Library"
@@ -99,6 +104,11 @@ func ensureWritableEngineLibrary(mount string) bool {
 	return syscall.Statfs(libDir, &libSt) == nil && libSt.Flags&unix_ST_RDONLY == 0
 }
 
+func writable(mount string) bool {
+	var st syscall.Statfs_t
+	return syscall.Statfs(mount, &st) != nil || st.Flags&unix_ST_RDONLY == 0 || ensureWritableEngineLibrary(mount)
+}
+
 func Convert(ctx context.Context, mount string, opts enginedb.Options) (enginedb.Result, error) {
 	r, e := compat.NewResolver(mount)
 	if e != nil {
@@ -113,22 +123,20 @@ func Convert(ctx context.Context, mount string, opts enginedb.Options) (enginedb
 	}
 	// Read-only volumes (HFS+ on Engine OS 5.0.4: rw writes crash hfsplus.ko)
 	// cannot hold an Engine Library unless Engine Library itself is a writable mount.
-	var st syscall.Statfs_t
-	if e == nil && syscall.Statfs(mount, &st) == nil && st.Flags&unix_ST_RDONLY != 0 {
-		if !ensureWritableEngineLibrary(mount) {
-			return enginedb.Result{Bypassed: true}, nil
-		}
+	if e == nil && !writable(mount) {
+		return enginedb.Result{Bypassed: true}, nil
 	}
 	if e != nil {
 		return enginedb.Result{}, e
 	}
-	l, e := ReadLibrary(ctx, mount)
+	l, stagedOnly, e := readLibrary(ctx, mount)
 	if errors.Is(e, os.ErrNotExist) {
 		return enginedb.Result{Bypassed: true}, nil
 	}
 	if e != nil {
 		return enginedb.Result{}, e
 	}
+	opts.StagedOnly = stagedOnly
 	Reconcile(r, l)
 	return enginedb.Sync(ctx, mount, l, opts)
 }
@@ -205,14 +213,19 @@ func ConvertAtMount(ctx context.Context, mount string, opts enginedb.Options, fu
 			break
 		}
 	}
-	if rel == "" {
-		return Convert(ctx, mount, opts)
+	var stamp string
+	if rel != "" {
+		st, err := os.Stat(r.FullPath(rel))
+		if err != nil {
+			return Convert(ctx, mount, opts)
+		}
+		stamp = fmt.Sprintf("%s %d %d", rel, st.Size(), st.ModTime().UnixNano()) + stagedStamp(mount)
+	} else {
+		stamp = strings.TrimSpace(stagedStamp(mount))
+		if stamp == "" {
+			return Convert(ctx, mount, opts)
+		}
 	}
-	st, err := os.Stat(r.FullPath(rel))
-	if err != nil {
-		return Convert(ctx, mount, opts)
-	}
-	stamp := fmt.Sprintf("%s %d %d", rel, st.Size(), st.ModTime().UnixNano()) + stagedStamp(mount)
 	dir := filepath.Join(mount, "Engine Library", "Database2")
 	if !full && !opts.SmartMatch && importedStamp(dir) == stamp {
 		return enginedb.Result{Bypassed: true}, nil
@@ -221,13 +234,40 @@ func ConvertAtMount(ctx context.Context, mount string, opts enginedb.Options, fu
 	// GL-011: Always use fast tmpfs delta import at mount when a library exceeds
 	// fastImportTracks, even if .rb-bridge-state.db already exists from an earlier mount.
 	if !full && !opts.SmartMatch {
-		l, err := ReadLibrary(ctx, mount)
+		l, stagedOnly, err := readLibrary(ctx, mount)
 		if err != nil {
 			return result, err
 		}
+		opts.StagedOnly = stagedOnly
 		if len(l.Tracks) > fastImportTracks {
-			result, err = fastImport(ctx, mount, dir, l, opts)
+			opts.Fast = true
+			result, err = stagedImport(ctx, mount, dir, l, opts)
 			if err == nil {
+				writeStamp(dir, stamp)
+			}
+			return result, err
+		}
+		// A first import that failed or was killed in place left an empty m.db,
+		// and Engine then showed the stick as an empty Engine library instead of
+		// offering its own rekordbox import (#53). Build it aside; publish or nothing.
+		if !hasLibrary(dir) {
+			if !writable(mount) {
+				return enginedb.Result{Bypassed: true}, nil
+			}
+			Reconcile(r, l)
+			result, err = stagedImport(ctx, mount, dir, l, opts)
+			if err != nil {
+				// Leave no Engine Library for Engine to mistake for one; Remove spares non-empty dirs.
+				// An empty m.db is what an earlier build left behind on a failed import.
+				for _, name := range []string{"m.db", stateName} {
+					if st, e := os.Stat(filepath.Join(dir, name)); e == nil && st.Size() == 0 {
+						os.Remove(filepath.Join(dir, name))
+					}
+				}
+				os.Remove(filepath.Join(dir, ".rb-bridge.lock"))
+				os.Remove(dir)
+				os.Remove(filepath.Dir(dir))
+			} else if result.Deferred == 0 {
 				writeStamp(dir, stamp)
 			}
 			return result, err
@@ -250,13 +290,21 @@ func importedStamp(dir string) string {
 	return strings.TrimSpace(string(b))
 }
 
+// hasLibrary reports a non-empty m.db, whatever wrote it.
+func hasLibrary(dir string) bool {
+	st, err := os.Stat(filepath.Join(dir, "m.db"))
+	return err == nil && st.Size() > 0
+}
+
 func writeStamp(dir, stamp string) {
 	if err := os.WriteFile(filepath.Join(dir, stampName), []byte(stamp+"\n"), 0o644); err != nil {
 		log.Printf("rb-bridge: could not record the import: %v", err)
 	}
 }
 
-func fastImport(ctx context.Context, mount, dir string, l *rekordbox.Library, opts enginedb.Options) (enginedb.Result, error) {
+// stagedImport syncs a copy of the volume's database in a temporary directory
+// and publishes it back only if the whole import succeeded.
+func stagedImport(ctx context.Context, mount, dir string, l *rekordbox.Library, opts enginedb.Options) (enginedb.Result, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return enginedb.Result{}, err
 	}
@@ -280,7 +328,7 @@ func fastImport(ctx context.Context, mount, dir string, l *rekordbox.Library, op
 			return enginedb.Result{}, err
 		}
 	}
-	opts.Fast, opts.DatabaseDir = true, work
+	opts.DatabaseDir = work
 	mergeByPath(l)
 	result, err := enginedb.Sync(ctx, mount, l, opts)
 	if err != nil {

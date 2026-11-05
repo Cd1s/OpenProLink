@@ -140,6 +140,8 @@ func (c *NFSClient) call(ctx context.Context, port int, prog, vers, proc uint32,
 		return nil, err
 	}
 	defer conn.Close()
+	stopCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopCancel()
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = time.Second

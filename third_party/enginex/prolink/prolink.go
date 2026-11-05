@@ -316,14 +316,14 @@ func (d *Discovery) SetResolver(fn func(Device) (*rekordbox.Analysis, string, st
 	d.resolver = fn
 }
 
-func (d *Discovery) defaultResolve(device Device) (*rekordbox.Analysis, string, string) {
-	if d.anlzRoot == "" || device.TrackID == 0 {
+func defaultResolveWithRoot(anlzRoot string, device Device) (*rekordbox.Analysis, string, string) {
+	if anlzRoot == "" || device.TrackID == 0 {
 		return nil, "", ""
 	}
 	var title, artist, anlzRelPath string
 	pdbPaths := []string{
-		filepath.Join(d.anlzRoot, "PIONEER", "rekordbox", "export.pdb"),
-		filepath.Join(d.anlzRoot, "rekordbox", "export.pdb"),
+		filepath.Join(anlzRoot, "PIONEER", "rekordbox", "export.pdb"),
+		filepath.Join(anlzRoot, "rekordbox", "export.pdb"),
 	}
 	for _, pdbPath := range pdbPaths {
 		if lib, err := rekordbox.ReadPDB(pdbPath); err == nil && lib != nil {
@@ -342,8 +342,8 @@ func (d *Discovery) defaultResolve(device Device) (*rekordbox.Analysis, string, 
 	}
 	if anlzRelPath == "" {
 		dbPaths := []string{
-			filepath.Join(d.anlzRoot, "PIONEER", "rekordbox", "exportLibrary.db"),
-			filepath.Join(d.anlzRoot, "rekordbox", "exportLibrary.db"),
+			filepath.Join(anlzRoot, "PIONEER", "rekordbox", "exportLibrary.db"),
+			filepath.Join(anlzRoot, "rekordbox", "exportLibrary.db"),
 		}
 		for _, dbPath := range dbPaths {
 			if lib, err := rekordbox.ReadSQLite(context.Background(), dbPath, nil); err == nil && lib != nil {
@@ -366,13 +366,13 @@ func (d *Discovery) defaultResolve(device Device) (*rekordbox.Analysis, string, 
 	if anlzRelPath != "" {
 		clean := strings.TrimPrefix(anlzRelPath, "/")
 		clean = strings.TrimSuffix(clean, filepath.Ext(clean))
-		basePaths = append(basePaths, filepath.Join(d.anlzRoot, clean))
+		basePaths = append(basePaths, filepath.Join(anlzRoot, clean))
 	}
 
 	var foundBases []string
-	anlzDir := filepath.Join(d.anlzRoot, "PIONEER", "USBANLZ")
+	anlzDir := filepath.Join(anlzRoot, "PIONEER", "USBANLZ")
 	if _, err := os.Stat(anlzDir); os.IsNotExist(err) {
-		anlzDir = d.anlzRoot
+		anlzDir = anlzRoot
 	}
 	_ = filepath.WalkDir(anlzDir, func(path string, de os.DirEntry, err error) error {
 		if err != nil || de.IsDir() {
@@ -395,7 +395,7 @@ func (d *Discovery) defaultResolve(device Device) (*rekordbox.Analysis, string, 
 			basePaths = append(basePaths, b)
 		}
 	}
-	if len(basePaths) == 0 && len(foundBases) > 0 {
+	if len(basePaths) == 0 && len(foundBases) == 1 {
 		basePaths = append(basePaths, foundBases[0])
 	}
 
@@ -429,9 +429,12 @@ func (d *Discovery) defaultResolve(device Device) (*rekordbox.Analysis, string, 
 	return merged, title, artist
 }
 
+func (d *Discovery) defaultResolve(device Device) (*rekordbox.Analysis, string, string) {
+	return defaultResolveWithRoot(d.anlzRoot, device)
+}
+
 func (d *Discovery) Observe(device Device) Device {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.devices == nil {
 		d.devices = map[string]Device{}
 	}
@@ -444,6 +447,7 @@ func (d *Discovery) Observe(device Device) Device {
 	// Spoofed UDP must not grow the table without bound; a real network has a
 	// handful of players and mixers (#36).
 	if _, ok := d.devices[key]; !ok && len(d.devices) >= maxDevices {
+		d.mu.Unlock()
 		return device
 	}
 	if old, ok := d.devices[key]; ok {
@@ -512,8 +516,16 @@ func (d *Discovery) Observe(device Device) Device {
 		}
 	}
 
+	var (
+		needsResolve bool
+		resolver     func(Device) (*rekordbox.Analysis, string, string)
+		anlzRoot     string
+		cacheKey     string
+		media        *MediaCache
+		host         net.IP
+	)
 	if device.TrackID != 0 && (len(device.Waveform) == 0 || len(device.Beats) == 0 || device.Title == "") {
-		cacheKey := fmt.Sprintf("%d:%d:%d", device.SourcePlayer, device.SourceSlot, device.TrackID)
+		cacheKey = fmt.Sprintf("%d:%d:%d", device.SourcePlayer, device.SourceSlot, device.TrackID)
 		if cached, ok := d.trackCache[cacheKey]; ok {
 			if len(device.Waveform) == 0 {
 				device.Waveform = cached.waveform
@@ -530,40 +542,54 @@ func (d *Discovery) Observe(device Device) Device {
 			if device.Artist == "" {
 				device.Artist = cached.artist
 			}
+		} else if d.resolver != nil || d.anlzRoot != "" || d.media != nil {
+			needsResolve = true
+			resolver = d.resolver
+			anlzRoot = d.anlzRoot
+			// Remote media (#59): look the host up now, fetch over NFS with the lock released.
+			if media = d.media; media != nil {
+				if host = d.hostIP(device.SourcePlayer); host == nil && device.SourcePlayer == device.Number {
+					host = net.ParseIP(device.Address)
+				}
+			}
+		}
+	}
+
+	if needsResolve {
+		d.mu.Unlock()
+
+		var anlz *rekordbox.Analysis
+		var title, artist string
+		if resolver != nil {
+			anlz, title, artist = resolver(device)
 		} else {
-			var anlz *rekordbox.Analysis
-			var title, artist string
-			if d.resolver != nil {
-				anlz, title, artist = d.resolver(device)
-			} else {
-				if d.media != nil {
-					host := d.hostIP(device.SourcePlayer)
-					if host == nil && device.SourcePlayer == device.Number {
-						host = net.ParseIP(device.Address)
-					}
-					anlz, title, artist = d.media.resolve(device, host)
-				}
-				if anlz == nil && title == "" && d.anlzRoot != "" {
-					anlz, title, artist = d.defaultResolve(device)
-				}
+			if media != nil {
+				anlz, title, artist = media.resolve(device, host)
 			}
-			var wf [][3]byte
-			var bts []BeatGridPoint
-			var dur uint32
-			if anlz != nil {
-				wf, bts, dur = ExtractANLZ(anlz)
+			if anlz == nil && title == "" && anlzRoot != "" {
+				anlz, title, artist = defaultResolveWithRoot(anlzRoot, device)
 			}
-			entry := cachedTrack{
-				analysis:   anlz,
-				title:      title,
-				artist:     artist,
-				waveform:   wf,
-				beats:      bts,
-				durationMS: dur,
-			}
-			if d.trackCache == nil {
-				d.trackCache = make(map[string]cachedTrack)
-			}
+		}
+		var wf [][3]byte
+		var bts []BeatGridPoint
+		var dur uint32
+		if anlz != nil {
+			wf, bts, dur = ExtractANLZ(anlz)
+		}
+		entry := cachedTrack{
+			analysis:   anlz,
+			title:      title,
+			artist:     artist,
+			waveform:   wf,
+			beats:      bts,
+			durationMS: dur,
+		}
+
+		d.mu.Lock()
+		if d.trackCache == nil {
+			d.trackCache = make(map[string]cachedTrack)
+		}
+		if _, exists := d.trackCache[cacheKey]; !exists {
 			if len(d.trackCache) >= 64 && len(d.trackKeys) > 0 {
 				evict := d.trackKeys[0]
 				d.trackKeys = d.trackKeys[1:]
@@ -571,22 +597,21 @@ func (d *Discovery) Observe(device Device) Device {
 			}
 			d.trackCache[cacheKey] = entry
 			d.trackKeys = append(d.trackKeys, cacheKey)
-
-			if len(device.Waveform) == 0 {
-				device.Waveform = wf
-			}
-			if len(device.Beats) == 0 {
-				device.Beats = bts
-			}
-			if device.DurationMS == 0 {
-				device.DurationMS = dur
-			}
-			if device.Title == "" {
-				device.Title = title
-			}
-			if device.Artist == "" {
-				device.Artist = artist
-			}
+		}
+		if len(device.Waveform) == 0 {
+			device.Waveform = wf
+		}
+		if len(device.Beats) == 0 {
+			device.Beats = bts
+		}
+		if device.DurationMS == 0 {
+			device.DurationMS = dur
+		}
+		if device.Title == "" {
+			device.Title = title
+		}
+		if device.Artist == "" {
+			device.Artist = artist
 		}
 	}
 
@@ -595,6 +620,7 @@ func (d *Discovery) Observe(device Device) Device {
 	}
 
 	d.devices[key] = device
+	d.mu.Unlock()
 	return device
 }
 

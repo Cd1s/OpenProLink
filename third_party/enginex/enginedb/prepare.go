@@ -21,6 +21,8 @@ type preparedTrack struct {
 	info      os.FileInfo
 	files     []analysisFile
 	art       *analysisFileExport
+	// broken is why the track's analysis or artwork could not be found (#53).
+	broken error
 }
 
 func prepareTracks(ctx context.Context, res *compat.Resolver, l *rekordbox.Library) ([]preparedTrack, error) {
@@ -45,15 +47,12 @@ func prepareTracks(ctx context.Context, res *compat.Resolver, l *rekordbox.Libra
 		if !st.Mode().IsRegular() {
 			return nil, fmt.Errorf("audio not regular: %s", rel)
 		}
-		files, art, e := sourceFiles(res, t)
-		if e != nil {
-			return nil, fmt.Errorf("track %d: %w", t.ID, e)
-		}
+		files, art, broken := sourceFiles(res, t)
 		fp := fingerprint{Encoding: performanceEncoding, Record: t.RecordHash + ":" + rekordbox.RecordHash(t), ResolvedPath: rel, Size: st.Size(), MTime: st.ModTime().UnixNano(), Artwork: art}
 		for _, f := range files {
 			fp.Analysis = append(fp.Analysis, analysisFileExport{f.rel, f.size, f.mtime})
 		}
-		prepared = append(prepared, preparedTrack{t, rel, digest(fp), st, files, art})
+		prepared = append(prepared, preparedTrack{t, rel, digest(fp), st, files, art, broken})
 	}
 	return prepared, nil
 }
@@ -95,7 +94,7 @@ func prepareFast(res *compat.Resolver, l *rekordbox.Library) []preparedTrack {
 // Stage every moved owned row first, so even two source tracks swapping paths
 // can retain their Engine IDs without violating Track's immediate UNIQUE(path).
 // Both temporary paths and the final rename are in the import transaction.
-func stageOwnedMoves(ctx context.Context, tx *sql.Tx, prepared []preparedTrack) (map[uint32]int64, error) {
+func stageOwnedMoves(ctx context.Context, tx *sql.Tx, prepared []preparedTrack, stagedOnly bool) (map[uint32]int64, error) {
 	targets := map[uint32]string{}
 	for _, p := range prepared {
 		targets[p.track.ID] = "../" + p.rel
@@ -121,6 +120,9 @@ func stageOwnedMoves(ctx context.Context, tx *sql.Tx, prepared []preparedTrack) 
 		}
 		target, ok := targets[source]
 		if !ok {
+			if stagedOnly && source < 1<<24 {
+				continue
+			}
 			removed = append(removed, id)
 			continue
 		}

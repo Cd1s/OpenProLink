@@ -110,6 +110,8 @@ type exportRun struct {
 	floodUntil        time.Time
 	observe           func(Device)
 	observer          *Discovery
+	updates           chan Device
+	cancel            context.CancelFunc
 	mediaCache        *MediaCache
 	network           *net.IPNet
 	done              chan struct{}
@@ -288,11 +290,6 @@ func startExport(cfg ExportConfig) (*exportRun, error) {
 		return net.JoinHostPort(ip.String(), port)
 	}
 	r := &exportRun{network: network, observe: cfg.Observe, nfs: nfs, ip: ip, mac: mac, lib: lib, pdb: pdb, pdbInfo: st, peers: make(map[string]exportPeer), mounted: true, done: make(chan struct{}), wake: make(chan struct{}, 1)}
-	if cfg.MediaCache != nil {
-		r.observer = NewDiscovery()
-		r.observer.SetMediaCache(cfg.MediaCache)
-		r.mediaCache = cfg.MediaCache
-	}
 	var disk syscall.Statfs_t
 	if syscall.Statfs(root, &disk) == nil {
 		r.capacity = uint64(disk.Blocks) * uint64(disk.Bsize)
@@ -339,6 +336,20 @@ func startExport(cfg ExportConfig) (*exportRun, error) {
 	if probe <= 0 {
 		probe = 2500 * time.Millisecond // captured keepalive cadence can exceed two seconds
 	}
+	if cfg.Observe != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		r.cancel = cancel
+		if cfg.MediaCache != nil {
+			cache := *cfg.MediaCache
+			cache.Context = ctx
+			r.mediaCache = &cache
+			r.observer = NewDiscovery()
+			r.observer.SetMediaCache(&cache)
+		}
+		r.updates = make(chan Device, 16)
+		r.wg.Add(1)
+		go r.observeLoop()
+	}
 	r.wg.Add(3)
 	go r.receivePeers()
 	go r.receiveMedia()
@@ -349,6 +360,9 @@ func (r *exportRun) number() byte         { r.mu.Lock(); defer r.mu.Unlock(); re
 func (r *exportRun) mediaAvailable() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.mounted }
 func (r *exportRun) close() {
 	close(r.done)
+	if r.cancel != nil {
+		r.cancel()
+	}
 	r.discovery.Close()
 	r.status.Close()
 	r.mu.Lock()
@@ -437,24 +451,10 @@ func (r *exportRun) receiveMedia() {
 		}
 		if r.observe != nil {
 			if d, err := ParsePacket(b[:n], 50002, addr.IP); err == nil && d.Number >= 1 && d.Number <= 6 && r.network.Contains(addr.IP) {
-				if r.observer != nil && (r.mediaCache.Enabled == nil || r.mediaCache.Enabled()) {
-					if d.SourcePlayer != d.Number {
-						r.mu.Lock()
-						var source net.IP
-						for _, p := range r.peers {
-							if p.number == d.SourcePlayer {
-								source = p.ip
-								break
-							}
-						}
-						r.mu.Unlock()
-						if source != nil {
-							r.observer.Observe(Device{Number: d.SourcePlayer, Address: source.String(), PacketType: 6})
-						}
-					}
-					d = r.observer.Observe(d)
+				select {
+				case r.updates <- d:
+				default:
 				}
-				r.observe(d)
 			}
 		}
 		if n < 0x30 || string(b[:10]) != magic || b[10] != 5 {
@@ -465,6 +465,46 @@ func (r *exportRun) receiveMedia() {
 			r.sendLocked(r.status, r.mediaPacket(), addr)
 		}
 		r.mu.Unlock()
+	}
+}
+
+func (r *exportRun) observeLoop() {
+	defer r.wg.Done()
+	for {
+		select {
+		case <-r.done:
+			return
+		case d := <-r.updates:
+			if r.observer != nil && (r.mediaCache.Enabled == nil || r.mediaCache.Enabled()) {
+				ready := true
+				if d.SourcePlayer != d.Number {
+					r.mu.Lock()
+					var source net.IP
+					for _, p := range r.peers {
+						if p.number == d.SourcePlayer {
+							source = p.ip
+							break
+						}
+					}
+					r.mu.Unlock()
+					if source == nil && d.SourcePlayer != 0 {
+						ready = false
+					}
+					if source != nil {
+						r.observer.Observe(Device{Number: d.SourcePlayer, Address: source.String(), PacketType: 6})
+					}
+				}
+				if ready {
+					d = r.observer.Observe(d)
+				}
+			}
+			select {
+			case <-r.done:
+				return
+			default:
+			}
+			r.observe(d)
+		}
 	}
 }
 func (r *exportRun) sendLocked(c *net.UDPConn, b []byte, to *net.UDPAddr) {

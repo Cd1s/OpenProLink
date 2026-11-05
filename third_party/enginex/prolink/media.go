@@ -3,6 +3,7 @@ package prolink
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ const (
 // in the drive's own layout, and fetches export.pdb again only when its size
 // or mtime changes (a different stick was inserted).
 type MediaCache struct {
+	Context context.Context // optional owner cancellation; nil uses Background
 	Dir     string
 	Enabled func() bool // checked on every new track; nil means on
 	Portmap int         // tests only; 0 is UDP 111
@@ -39,7 +41,11 @@ func (m *MediaCache) resolve(dev Device, host net.IP) (*rekordbox.Analysis, stri
 	if err != nil {
 		return nil, "", ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mediaFetch)
+	parent := m.Context
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, mediaFetch)
 	defer cancel()
 	c := &NFSClient{IP: host, Portmap: m.Portmap}
 	root := filepath.Join(m.Dir, fmt.Sprintf("%d-%d", dev.SourcePlayer, dev.SourceSlot))
@@ -59,7 +65,16 @@ func (m *MediaCache) resolve(dev Device, host net.IP) (*rekordbox.Analysis, stri
 			return nil, "", ""
 		}
 	}
-	lib, err := rekordbox.ReadPDB(local)
+	pdbFile, err := os.Open(local)
+	if err != nil {
+		return nil, "", ""
+	}
+	defer pdbFile.Close()
+	st, err := pdbFile.Stat()
+	if err != nil {
+		return nil, "", ""
+	}
+	lib, err := rekordbox.ParsePDB(mediaReaderAt{ctx, pdbFile}, st.Size())
 	if err != nil || lib == nil {
 		return nil, "", ""
 	}
@@ -75,6 +90,9 @@ func (m *MediaCache) resolve(dev Device, host net.IP) (*rekordbox.Analysis, stri
 		base := strings.TrimSuffix(rel, filepath.Ext(rel))
 		var merged *rekordbox.Analysis
 		for _, ext := range []string{".DAT", ".EXT", ".2EX"} {
+			if ctx.Err() != nil {
+				return nil, "", ""
+			}
 			path := filepath.Join(root, base+ext)
 			if _, err := os.Stat(path); err != nil {
 				data, _, err := c.Fetch(ctx, export, "/"+base+ext, maxANLZ)
@@ -113,4 +131,17 @@ func writeFile(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// Check cancellation between PDB page reads as well as during network I/O.
+type mediaReaderAt struct {
+	context.Context
+	io.ReaderAt
+}
+
+func (r mediaReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if err := r.Err(); err != nil {
+		return 0, err
+	}
+	return r.ReaderAt.ReadAt(p, off)
 }

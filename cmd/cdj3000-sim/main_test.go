@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/bridge"
+	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/enginedb"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
 )
 
@@ -131,4 +133,36 @@ func TestSimulatorReverseLinkAndYield(t *testing.T) {
 		defer s.mu.Unlock()
 		return s.denonPlayer == 3 && len(s.yields) > 0 && strings.Contains(fmt.Sprint(s.yields), "4 → 3")
 	})
+}
+
+func TestSimulatorEmptyDenonDriveStage(t *testing.T) {
+	s, err := newSim("", net.IPv4(127, 0, 0, 10).To4(), net.IPv4(127, 0, 0, 9).To4())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.denonEmpty = true
+	if err := s.start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := s.stage(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	if !strings.Contains(string(b), "[Pro DJ Link: CDJ-3000]") {
+		t.Fatalf("no CDJ playlist folder after #59 import on empty Denon drive: %s", b)
+	}
+
+	if s.exporter.Status().Enabled {
+		t.Fatalf("empty Denon drive should not have an enabled exporter: %+v", s.exporter.Status())
+	}
+
+	res, err := bridge.ConvertAtMount(t.Context(), s.denonDrive, enginedb.Options{}, false)
+	if err != nil {
+		t.Fatalf("ConvertAtMount failed: %v", err)
+	}
+	if !res.Bypassed {
+		t.Fatalf("expected unchanged mount to be bypassed, got %+v", res)
+	}
 }

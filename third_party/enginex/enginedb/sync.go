@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"path"
@@ -44,6 +45,9 @@ CREATE TABLE bridge.BridgeLibrary(key TEXT PRIMARY KEY, value BLOB);
 var bridgeTables = []string{"BridgeState", "BridgeAnalysis", "BridgePlaylist", "BridgeLibrary"}
 
 type Options struct {
+	// StagedOnly updates remote CDJ sources while retaining previously imported
+	// local sources whose export is absent. Bridge determines this mode.
+	StagedOnly   bool `json:"-"`
 	SmartMatch   bool
 	CurrentTrack uint32
 	// Fast imports only what the export itself holds, opening no audio, analysis
@@ -61,7 +65,11 @@ type Options struct {
 type Result struct {
 	Added, Updated, Unchanged int
 	// Deferred tracks were imported without cues and waveforms: Deadline passed.
-	Deferred         int `json:",omitempty"`
+	Deferred int `json:",omitempty"`
+	// Degraded tracks had an unreadable audio, analysis or artwork file and were
+	// imported from the export's metadata alone, so one bad file cannot empty the
+	// whole stick (#53). They are read again once their files change.
+	Degraded         int `json:",omitempty"`
 	PlaylistsChanged bool
 	Bypassed         bool
 }
@@ -275,6 +283,42 @@ func sourceFiles(res *compat.Resolver, t rekordbox.Track) ([]analysisFile, *anal
 	return files, art, nil
 }
 
+// readSources reads a track's ANLZ files and, unless skipAudio, its audio header.
+func readSources(res *compat.Resolver, files []analysisFile, full string, skipAudio bool) (*rekordbox.Analysis, compat.AudioInfo, error) {
+	a := &rekordbox.Analysis{}
+	for _, f := range files {
+		aa, e := rekordbox.ReadAnalysis(res.FullPath(f.rel))
+		if e != nil {
+			return nil, compat.AudioInfo{}, e
+		}
+		a.Merge(aa)
+	}
+	if skipAudio {
+		return a, compat.AudioInfo{}, nil
+	}
+	audio, e := compat.AudioHeader(full)
+	if e != nil {
+		return nil, compat.AudioInfo{}, fmt.Errorf("audio header: %w", e)
+	}
+	return a, audio, nil
+}
+
+func readArtwork(p string) ([]byte, error) {
+	f, e := os.Open(p)
+	if e != nil {
+		return nil, e
+	}
+	defer f.Close()
+	data, e := io.ReadAll(io.LimitReader(f, 32<<20+1))
+	if e != nil {
+		return nil, e
+	}
+	if len(data) > 32<<20 {
+		return nil, fmt.Errorf("artwork exceeds 32 MiB")
+	}
+	return data, nil
+}
+
 // Sync imports only bridge-owned rows. All source files are opened read-only;
 // the only output is Engine Library. Unchanged tracks do not read audio headers
 // or ANLZ bodies and do not rewrite Track/PerformanceData.
@@ -334,7 +378,7 @@ func Sync(ctx context.Context, mount string, l *rekordbox.Library, opts Options)
 	}
 	mapping := map[uint32]int64{}
 	effectiveTracks := append([]rekordbox.Track(nil), l.Tracks...)
-	owned, err := stageOwnedMoves(ctx, tx, prepared)
+	owned, err := stageOwnedMoves(ctx, tx, prepared, opts.StagedOnly)
 	if err != nil {
 		return result, err
 	}
@@ -413,20 +457,18 @@ func Sync(ctx context.Context, mount string, l *rekordbox.Library, opts Options)
 			result.Unchanged++
 			continue
 		}
-		var e error
-		a := &rekordbox.Analysis{}
-		for _, f := range files {
-			aa, e := rekordbox.ReadAnalysis(res.FullPath(f.rel))
-			if e != nil {
-				return result, e
-			}
-			a.Merge(aa)
+		degraded := false
+		degrade := func(e error) {
+			log.Printf("rb-bridge: track %d (%s) imported without cues: %v", t.ID, rel, e)
+			degraded, fast, art = true, true, nil
 		}
-		var audio compat.AudioInfo
-		if !fast {
-			if audio, e = compat.AudioHeader(full); e != nil {
-				return result, fmt.Errorf("track %d audio header: %w", t.ID, e)
-			}
+		a, audio, e := readSources(res, files, full, fast)
+		if e == nil {
+			e = preparedTrack.broken
+		}
+		if e != nil {
+			degrade(e)
+			a, audio = &rekordbox.Analysis{}, compat.AudioInfo{}
 		}
 		if audio.SampleRate > 0 {
 			t.SampleRate = audio.SampleRate
@@ -450,26 +492,22 @@ func Sync(ctx context.Context, mount string, l *rekordbox.Library, opts Options)
 		var perf Performance
 		if !fast {
 			if perf, e = EncodePerformance(t, a); e != nil {
-				return result, fmt.Errorf("track %d performance: %w", t.ID, e)
+				degrade(fmt.Errorf("performance: %w", e))
+				perf = Performance{}
 			}
 		}
 		var artID any
+		var data []byte
 		if art != nil {
-			if art.Size > 32<<20 {
-				return result, fmt.Errorf("artwork exceeds 32 MiB")
+			if data, e = readArtwork(res.FullPath(art.Path)); e != nil {
+				log.Printf("rb-bridge: track %d artwork left out: %v", t.ID, e)
+				degraded = true
 			}
-			f, e := os.Open(res.FullPath(art.Path))
-			if e != nil {
-				return result, e
-			}
-			data, e := io.ReadAll(io.LimitReader(f, 32<<20+1))
-			f.Close()
-			if e != nil {
-				return result, e
-			}
-			if len(data) > 32<<20 {
-				return result, fmt.Errorf("artwork exceeds 32 MiB")
-			}
+		}
+		if degraded {
+			result.Degraded++
+		}
+		if data != nil {
 			h := sha1.Sum(data)
 			artHash := hex.EncodeToString(h[:])
 			var n int64
@@ -552,7 +590,14 @@ func Sync(ctx context.Context, mount string, l *rekordbox.Library, opts Options)
 		expectedPlaylists++
 	}
 	var actualPlaylists, validPlaylists int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*),count(p.id) FROM BridgePlaylist b LEFT JOIN Playlist p ON p.id=b.listId`).Scan(&actualPlaylists, &validPlaylists); err != nil {
+	countQuery := `SELECT count(*),count(p.id) FROM BridgePlaylist b LEFT JOIN Playlist p ON p.id=b.listId`
+	if opts.StagedOnly {
+		countQuery += ` WHERE b.sourceId>=16777216`
+		if opts.SmartMatch {
+			countQuery += ` OR b.sourceId=-1`
+		}
+	}
+	if err = tx.QueryRowContext(ctx, countQuery).Scan(&actualPlaylists, &validPlaylists); err != nil {
 		return result, err
 	}
 	if oldHash != playlistHash || actualPlaylists != expectedPlaylists || validPlaylists != expectedPlaylists {
@@ -609,20 +654,29 @@ func uniqueTitle(ctx context.Context, tx *sql.Tx, name string, parent int64) (st
 }
 
 func writePlaylists(ctx context.Context, tx *sql.Tx, l *rekordbox.Library, opts Options, mapping map[uint32]int64, databaseUUID string, recommendations []uint32) error {
-	// Refuse to cascade-delete an Engine-created child of an imported folder.
+	owned := `SELECT listId FROM BridgePlaylist`
+	predicate := ""
+	if opts.StagedOnly {
+		predicate = ` WHERE sourceId>=16777216`
+		if opts.SmartMatch {
+			predicate += ` OR sourceId=-1`
+		}
+		owned += predicate
+	}
+	// Refuse to cascade-delete an Engine-created child of a rebuilt folder.
 	var n int
-	if e := tx.QueryRowContext(ctx, `SELECT count(*) FROM Playlist WHERE parentListId IN (SELECT listId FROM BridgePlaylist) AND id NOT IN (SELECT listId FROM BridgePlaylist)`).Scan(&n); e != nil {
+	if e := tx.QueryRowContext(ctx, `SELECT count(*) FROM Playlist WHERE parentListId IN (`+owned+`) AND id NOT IN (SELECT listId FROM BridgePlaylist)`).Scan(&n); e != nil {
 		return e
 	}
 	if n > 0 {
 		return fmt.Errorf("imported folders contain native playlists; refusing destructive rebuild")
 	}
-	if _, e := tx.ExecContext(ctx, `DELETE FROM PlaylistEntity WHERE listId IN (SELECT listId FROM BridgePlaylist)`); e != nil {
+	if _, e := tx.ExecContext(ctx, `DELETE FROM PlaylistEntity WHERE listId IN (`+owned+`)`); e != nil {
 		return e
 	}
 	// Delete leaves first: factory parent-delete triggers only cascade one level
 	// when recursive_triggers is disabled, so explicitly remove the whole owned tree.
-	rows, e := tx.QueryContext(ctx, `SELECT listId FROM BridgePlaylist ORDER BY listId DESC`)
+	rows, e := tx.QueryContext(ctx, owned+` ORDER BY listId DESC`)
 	if e != nil {
 		return e
 	}
@@ -645,7 +699,7 @@ func writePlaylists(ctx context.Context, tx *sql.Tx, l *rekordbox.Library, opts 
 			return e
 		}
 	}
-	if _, e = tx.ExecContext(ctx, `DELETE FROM BridgePlaylist`); e != nil {
+	if _, e = tx.ExecContext(ctx, `DELETE FROM BridgePlaylist`+predicate); e != nil {
 		return e
 	}
 	if e = normalizePlaylistTails(ctx, tx); e != nil {

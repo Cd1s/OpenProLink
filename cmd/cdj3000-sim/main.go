@@ -437,7 +437,7 @@ func (s *sim) stage(ctx context.Context) (map[string]any, error) {
 		return nil, fmt.Errorf("rb-bridge: %w", err)
 	}
 	if res.Bypassed {
-		return nil, fmt.Errorf("rb-bridge skipped the drive: no PIONEER export of its own, so the staged CDJ library is not imported")
+		return nil, fmt.Errorf("rb-bridge skipped the drive (already up to date or no export found)")
 	}
 	db, err := sql.Open("sqlite", filepath.Join(s.denonDrive, "Engine Library", "Database2", "m.db"))
 	if err != nil {
