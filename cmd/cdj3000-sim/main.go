@@ -12,6 +12,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	_ "embed"
@@ -26,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,14 +60,20 @@ type track struct {
 	BPM        float64                 `json:"bpm"`
 	Path       string                  `json:"path"`
 	DurationMS uint32                  `json:"duration_ms"`
+	Remote     bool                    `json:"remote,omitempty"`    // loaded from the Denon over LINK
+	RemoteID   uint32                  `json:"remote_id,omitempty"` // its rekordbox ID on the Denon's drive
 	Waveform   [][3]byte               `json:"-"`
 	Beats      []prolink.BeatGridPoint `json:"-"`
 }
 
+// remoteTrack marks the ID of a track loaded over LINK, so it never collides with ours.
+const remoteTrack = 1 << 31
+
 type sim struct {
 	usb, denonDrive, cache string
 	simIP, denonIP         net.IP
-	deck                   net.IP // a real deck on the LAN: packets go there, NFS answers on portmap 111
+	deck                   net.IP   // a real deck on the LAN: packets go there, NFS answers on portmap 111
+	decks                  []net.IP // every -deck; deck is the first. Each gets the CDJ's packets
 	nfs                    *prolink.NFSServer
 	discovery              *prolink.Discovery
 	tracks                 []track
@@ -83,12 +91,31 @@ type sim struct {
 	wire     []wireEntry
 	staged   map[string]any
 	keepNow  bool // announce a new player number at once
+	master   bool
+	syncOn   bool
+	nudge    float64 // percent, held pitch bend: moves the play head only, not the reported tempo
+	cueMS    float64
+	hotCues  map[uint32]map[string]float64 // track ID -> pad A-H -> position
 
-	exporter    *prolink.Exporter // #63 reverse export, Denon side
-	denonPlayer byte              // player number the Denon export announces
-	yields      []string
-	linkName    string
-	linkAudio   []byte
+	masterBPM  float64 // effective BPM of another player that claims master (BEAT SYNC follows it)
+	masterSeen time.Time
+	peerMaster map[byte]bool // master flag in each other player's last status
+	// BEAT SYNC phase source: the master was masterBar beats into its bar (or beat,
+	// without barKnown) at masterAt. Fed by beat packets, Ableton Link or /peer/decks.
+	masterBar float64
+	masterAt  time.Time
+	barKnown  bool
+	syncSnap  bool // BEAT SYNC just pressed: jump onto the master's beat once
+
+	link         *ableLink         // Ableton Link peer, nil unless -ableton-link
+	exporter     *prolink.Exporter // #63 reverse export, Denon side
+	denonPlayer  byte              // player number the Denon export announces
+	yields       []string
+	linkName     string
+	linkAudio    []byte // nil while it downloads
+	linkAudioErr string
+	linkLib      *rekordbox.Library // the Denon's export.pdb, parsed
+	linkPDB      prolink.NFSFile    // its size and mtime when parsed
 }
 
 func main() {
@@ -97,23 +124,34 @@ func main() {
 	simIP := flag.String("sim-ip", "127.0.0.2", "address the simulated CDJ-3000 sends from and serves NFS on")
 	denonIP := flag.String("denon-ip", "127.0.0.1", "address EngineX's Pro DJ Link receiver listens on")
 	denonEmpty := flag.Bool("denon-empty", false, "Denon drive holds no rekordbox export of its own")
-	deck := flag.String("deck", "", "IPv4 of a real deck on the LAN to play to (needs -sim-ip set to this host's LAN address)")
+	abl := flag.Bool("ableton-link", false, "publish tempo and bar phase as an Ableton Link session on -sim-ip's LAN")
+	deck := flag.String("deck", "", "IPv4 of a real deck on the LAN to play to, or several separated by commas; the first hosts export and master handover (needs -sim-ip set to this host's LAN address)")
 	flag.Parse()
 	s, err := newSim(*usb, net.ParseIP(*simIP).To4(), net.ParseIP(*denonIP).To4())
 	if err != nil {
 		log.Fatal(err)
 	}
 	if *deck != "" {
-		if s.deck = net.ParseIP(*deck).To4(); s.deck == nil {
-			log.Fatal("-deck must be IPv4")
+		for _, a := range strings.Split(*deck, ",") {
+			ip := net.ParseIP(strings.TrimSpace(a)).To4()
+			if ip == nil {
+				log.Fatal("-deck must be IPv4")
+			}
+			s.decks = append(s.decks, ip)
 		}
+		s.deck = s.decks[0]
 	}
 	s.denonEmpty = *denonEmpty
-	s.playing = true
+	s.playing, s.master = true, true
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := s.start(ctx); err != nil {
 		log.Fatal(err)
+	}
+	if *abl {
+		if s.link, err = s.startAbletonLink(s.simIP); err != nil {
+			log.Fatal(err)
+		}
 	}
 	log.Printf("cdj3000-sim: %d tracks from %s; UI http://%s", len(s.tracks), s.usb, *httpAddr)
 	log.Fatal(http.ListenAndServe(*httpAddr, s.routes()))
@@ -166,7 +204,7 @@ func newSim(usb string, simIP, denonIP net.IP) (*sim, error) {
 		return nil, fmt.Errorf("usb: %w", err)
 	}
 	s := &sim{usb: usb, denonDrive: filepath.Join(work, "denon"), cache: filepath.Join(work, "cache"),
-		simIP: simIP, denonIP: denonIP, number: 3, pitchMax: 10}
+		simIP: simIP, denonIP: denonIP, number: 3, pitchMax: 10, hotCues: map[uint32]map[string]float64{}, peerMaster: map[byte]bool{}}
 	for _, t := range lib.Tracks {
 		tr := track{ID: t.ID, Title: t.Title, Artist: t.Artist, BPM: t.BPM, Path: t.Path, DurationMS: uint32(t.Duration * 1000)}
 		if t.AnalysisPath != "" {
@@ -201,7 +239,8 @@ func newSim(usb string, simIP, denonIP net.IP) (*sim, error) {
 	return s, nil
 }
 
-// pwv7 is the whole 3-band waveform as [low, mid, high], up to 2400 columns;
+// pwv7 is the whole 3-band waveform as [low, mid, high] at full resolution
+// (150 columns a second in rekordbox exports), as the CDJ-3000 scrolls it;
 // prolink.ExtractANLZ keeps 256, which is what EngineX itself displays.
 func pwv7(a *rekordbox.Analysis) [][3]byte {
 	for _, w := range a.Waveforms {
@@ -209,11 +248,10 @@ func pwv7(a *rekordbox.Analysis) [][3]byte {
 			continue
 		}
 		n := len(w.Data) / 3
-		cols := make([][3]byte, min(n, 2400))
-		for i := range n {
-			c := &cols[i*len(cols)/n]
+		cols := make([][3]byte, n)
+		for i := range cols {
 			p := w.Data[3*i:]
-			c[0], c[1], c[2] = max(c[0], p[2]), max(c[1], p[0]), max(c[2], p[1])
+			cols[i] = [3]byte{p[2], p[0], p[1]}
 		}
 		return cols
 	}
@@ -259,7 +297,7 @@ func (s *sim) start(ctx context.Context) error {
 		return fmt.Errorf("denon receiver: %w", err)
 	case <-time.After(200 * time.Millisecond):
 	}
-	for _, port := range []int{50000, 50002} {
+	for _, port := range []int{50000, 50001, 50002} {
 		if err := s.listenDenon(ctx, port); err != nil {
 			return fmt.Errorf("cdj listener: %w", err)
 		}
@@ -275,6 +313,9 @@ func (s *sim) start(ctx context.Context) error {
 		return err
 	}
 	go s.run(ctx, conn)
+	if s.deck != nil {
+		go s.watchDeckLead(ctx)
+	}
 	return nil
 }
 
@@ -291,6 +332,28 @@ func (s *sim) log(dir string, port int, kind string, b []byte) {
 	}
 }
 
+// targets are every real deck (other players only see a CDJ that talks to them),
+// else the in-process receiver.
+func (s *sim) targets() []net.IP {
+	if len(s.decks) > 0 {
+		return s.decks
+	}
+	return []net.IP{s.target()}
+}
+
+// isDeck reports whether ip is one of the -deck decks.
+func (s *sim) isDeck(ip net.IP) bool {
+	if s.deck != nil && s.deck.Equal(ip) {
+		return true
+	}
+	for _, d := range s.decks {
+		if d.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // target is where the virtual CDJ's packets go: the real deck, or the in-process receiver.
 func (s *sim) target() net.IP {
 	if s.deck != nil {
@@ -302,11 +365,16 @@ func (s *sim) target() net.IP {
 func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 	defer conn.Close()
 	send := func(port int, kind string, b []byte) {
-		if _, err := conn.WriteToUDP(b, &net.UDPAddr{IP: s.target(), Port: port}); err == nil {
+		sent := false
+		for _, ip := range s.targets() {
+			_, err := conn.WriteToUDP(b, &net.UDPAddr{IP: ip, Port: port})
+			sent = sent || err == nil
+		}
+		if sent {
 			s.log("CDJ → Denon", port, kind, b)
 		}
 	}
-	tick := time.NewTicker(20 * time.Millisecond)
+	tick := time.NewTicker(5 * time.Millisecond) // beat packets leave within 5 ms of the beat
 	defer tick.Stop()
 	var lastKeep, lastStatus, lastPos, lastPosLog time.Time
 	for {
@@ -353,7 +421,12 @@ func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 				lastKeep = now
 			}
 			if posPkt != nil {
-				if _, err := conn.WriteToUDP(posPkt, &net.UDPAddr{IP: s.target(), Port: 50001}); err == nil {
+				sent := false
+				for _, ip := range s.targets() {
+					_, err := conn.WriteToUDP(posPkt, &net.UDPAddr{IP: ip, Port: 50001})
+					sent = sent || err == nil
+				}
+				if sent {
 					if lastPosLog.IsZero() || now.Sub(lastPosLog) >= time.Second {
 						s.log("CDJ → Denon", 50001, "absolute pos 0x0b", posPkt)
 						lastPosLog = now
@@ -372,15 +445,58 @@ func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 	}
 }
 
-// advance moves the play head at the pitched rate and loops at the end.
+// advance moves the play head at the pitched (and nudged) rate and loops at
+// the end. BEAT SYNC (without MASTER) follows the master's tempo and, when a
+// phase source is live, its beat or bar phase.
 func (s *sim) advance(now time.Time) {
+	follow := s.syncOn && !s.master
+	if follow && s.masterBPM > 0 && now.Sub(s.masterSeen) < 2*time.Second {
+		need := (s.masterBPM/s.bpm() - 1) * 100
+		for _, r := range []float64{6, 10, 16, 100} { // widen the tempo range as a CDJ does for sync
+			if math.Abs(need) <= s.pitchMax {
+				break
+			}
+			s.pitchMax = math.Max(s.pitchMax, r)
+		}
+		s.pitch = math.Max(-s.pitchMax, math.Min(s.pitchMax, need))
+	}
 	if !s.lastTick.IsZero() && s.playing {
-		s.posMS += float64(now.Sub(s.lastTick).Milliseconds()) * (1 + s.pitch/100)
+		s.posMS += float64(now.Sub(s.lastTick).Microseconds()) / 1000 * (1 + (s.pitch+s.nudge)/100)
 		if d := float64(s.tracks[s.cur].DurationMS); s.posMS >= d {
 			s.posMS = math.Mod(s.posMS, d)
 		}
 	}
 	s.lastTick = now
+	if follow && s.playing && s.masterBPM > 0 && now.Sub(s.masterAt) < 2*time.Second {
+		s.lockPhase(now)
+	}
+}
+
+// lockPhase moves the play head onto the master's beat (its bar, when the source
+// says where the bar starts): a jump when BEAT SYNC is pressed or the error passes
+// 25 ms, a quarter of the error per tick for drift above 2 ms.
+func (s *sim) lockPhase(now time.Time) {
+	period := 1.0
+	if s.barKnown {
+		period = 4
+	}
+	target := s.masterBar + now.Sub(s.masterAt).Seconds()*s.masterBPM/60
+	d := target - s.barPhase(s.posMS)
+	d -= period * math.Floor(d/period+0.5) // shortest way: [-period/2, period/2)
+	errMS := d * 60000 / s.bpm()           // beats of this track, in track time
+	switch {
+	case s.syncSnap || math.Abs(errMS) > 25:
+		s.posMS, s.syncSnap = math.Max(0, s.posMS+errMS), false
+	case math.Abs(errMS) > 2:
+		s.posMS += errMS / 4
+	}
+}
+
+// sawMasterBeat records the master's position: bar phase (beats into the bar, or
+// into the beat if !bar) at time at. Caller holds s.mu.
+func (s *sim) sawMasterBeat(bpm, phase float64, bar bool, at time.Time) {
+	s.masterBPM, s.masterSeen = bpm, at
+	s.masterBar, s.masterAt, s.barKnown = phase, at, bar
 }
 
 // beatAt is the beat number (1-based) and beat within bar at the play head.
@@ -420,15 +536,19 @@ func keepalivePacket(number byte, ip net.IP) []byte {
 }
 
 func (s *sim) statusPacket(beat uint32, bib byte) []byte {
+	src, id := s.number, s.tracks[s.cur].ID
+	if t := s.tracks[s.cur]; t.Remote {
+		src, id = s.denonPlayer, t.RemoteID // loaded from the Denon's USB, as a CDJ reports a linked track
+	}
 	return cdj.NewCDJ3000StatusPacket(cdj.Status{
 		DeviceName:        "CDJ-3000",
 		PlayerNumber:      s.number,
 		PacketVersion:     6,
 		Active:            s.playing,
-		TrackSourcePlayer: s.number,
+		TrackSourcePlayer: src,
 		TrackSourceSlot:   cdj.SlotUSB,
 		TrackType:         cdj.TrackTypeRekordbox,
-		TrackID:           s.tracks[s.cur].ID,
+		TrackID:           id,
 		USBPresent:        true,
 		USBLocalState:     0,
 		SDLocalState:      4,
@@ -436,8 +556,8 @@ func (s *sim) statusPacket(beat uint32, bib byte) []byte {
 		PlayState1:        cdj.PlayState1Paused,
 		Firmware:          "3.20",
 		Playing:           s.playing,
-		Master:            true,
-		Sync:              false,
+		Master:            s.master,
+		Sync:              s.syncOn,
 		OnAir:             true,
 		PlayState2:        0xfe,
 		Pitch:             s.pitch,
@@ -535,16 +655,29 @@ func (s *sim) routes() http.Handler {
 	})
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		snap := prolink.BuildSnapshot(s.discovery.Devices(time.Now()))
+		var abl map[string]any
+		if s.link != nil {
+			abl = s.link.status()
+		}
 		s.mu.Lock()
-		beat, bib := s.beatAt()
 		wire := append([]wireEntry(nil), s.wire[max(0, len(s.wire)-120):]...)
 		state := map[string]any{
-			"cdj": map[string]any{"number": s.number, "playing": s.playing, "pitch": s.pitch, "pitch_max": s.pitchMax,
-				"track": s.tracks[s.cur], "position_ms": s.posMS, "beat": beat, "beat_in_bar": bib, "bpm": s.bpm(),
-				"effective_bpm": s.bpm() * (1 + s.pitch/100), "ip": s.simIP.String(), "portmap": s.nfs.PortmapPort()},
-			"tracks": s.tracks, "denon": strip(snap.Devices), "staged": s.staged, "wire": wire,
+			"cdj":    s.deckState(true),
+			"tracks": append([]track(nil), s.tracks...), "denon": strip(snap.Devices), "ableton_link": abl, "deck": s.deck, "staged": s.staged, "wire": wire,
 			"export": s.exporter.Status(), "denon_player": s.denonPlayer, "yields": s.yields[max(0, len(s.yields)-8):],
+			"link_audio": map[string]any{"bytes": len(s.linkAudio), "error": s.linkAudioErr},
 		}
+		s.mu.Unlock()
+		writeJSON(w, state)
+	})
+	// The UI polls this 10 times a second; /api/state (wire log, track list) once a second.
+	mux.HandleFunc("GET /api/tick", func(w http.ResponseWriter, r *http.Request) {
+		var abl map[string]any
+		if s.link != nil {
+			abl = s.link.status()
+		}
+		s.mu.Lock()
+		state := map[string]any{"cdj": s.deckState(false), "ableton_link": abl, "link_audio": map[string]any{"bytes": len(s.linkAudio), "error": s.linkAudioErr}}
 		s.mu.Unlock()
 		writeJSON(w, state)
 	})
@@ -560,22 +693,30 @@ func (s *sim) routes() http.Handler {
 			writeJSON(w, map[string]any{})
 			return
 		}
-		for _, t := range s.tracks {
-			if t.ID == uint32(id) {
-				writeJSON(w, map[string]any{"waveform": t.Waveform, "beats": t.Beats, "duration_ms": t.DurationMS})
-				return
-			}
+		if t, ok := s.track(uint32(id)); ok {
+			writeJSON(w, map[string]any{"waveform": t.Waveform, "beats": t.Beats, "duration_ms": t.DurationMS})
+			return
 		}
 		http.NotFound(w, r)
 	})
 	mux.HandleFunc("GET /audio", func(w http.ResponseWriter, r *http.Request) {
-		id, _ := strconv.Atoi(r.URL.Query().Get("id"))
-		for _, t := range s.tracks {
-			// Only paths listed in export.pdb, resolved inside the USB root.
-			if rel, ok := prolink.SafeRel(t.Path); t.ID == uint32(id) && ok {
-				http.ServeFile(w, r, filepath.Join(s.usb, rel))
+		id, _ := strconv.ParseUint(r.URL.Query().Get("id"), 10, 32)
+		t, ok := s.track(uint32(id))
+		if ok && t.Remote {
+			s.mu.Lock()
+			name, data := s.linkName, s.linkAudio
+			s.mu.Unlock()
+			if data == nil {
+				http.Error(w, "still downloading over NFS", http.StatusServiceUnavailable)
 				return
 			}
+			http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+			return
+		}
+		// Only paths listed in export.pdb, resolved inside the USB root.
+		if rel, safe := prolink.SafeRel(t.Path); ok && safe {
+			http.ServeFile(w, r, filepath.Join(s.usb, rel))
+			return
 		}
 		http.NotFound(w, r)
 	})
@@ -587,6 +728,11 @@ func (s *sim) routes() http.Handler {
 			PitchMax *float64 `json:"pitch_max"`
 			Track    *uint32  `json:"track"`
 			Cue      bool     `json:"cue"`
+			Master   *bool    `json:"master"`
+			Sync     *bool    `json:"sync"`
+			Nudge    *float64 `json:"nudge"`    // held pitch bend, percent
+			ShiftMS  float64  `json:"shift_ms"` // jog wheel: move the play head
+			HotCue   string   `json:"hot_cue"`  // A-H: jump if set, else set here
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&c); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -613,12 +759,38 @@ func (s *sim) routes() http.Handler {
 		if c.Track != nil {
 			for i, t := range s.tracks {
 				if t.ID == *c.Track {
-					s.cur, s.posMS = i, 0
+					s.cur, s.posMS, s.cueMS = i, 0, 0
 				}
 			}
 		}
-		if c.Cue {
-			s.posMS, s.playing = 0, false
+		if c.Master != nil {
+			s.master = *c.Master
+		}
+		if c.Sync != nil {
+			s.syncSnap = *c.Sync && !s.syncOn
+			s.syncOn = *c.Sync
+		}
+		if c.Nudge != nil {
+			s.nudge = math.Max(-16, math.Min(16, *c.Nudge))
+		}
+		dur := float64(s.tracks[s.cur].DurationMS)
+		s.posMS = math.Max(0, math.Min(dur-1, s.posMS+c.ShiftMS))
+		// CDJ CUE: playing returns to the cue point and pauses; paused sets the cue point here.
+		if c.Cue && s.playing {
+			s.posMS, s.playing = s.cueMS, false
+		} else if c.Cue {
+			s.cueMS = s.posMS
+		}
+		if len(c.HotCue) == 1 && c.HotCue >= "A" && c.HotCue <= "H" {
+			id := s.tracks[s.cur].ID
+			if s.hotCues[id] == nil {
+				s.hotCues[id] = map[string]float64{}
+			}
+			if at, ok := s.hotCues[id][c.HotCue]; ok {
+				s.posMS = at
+			} else {
+				s.hotCues[id][c.HotCue] = s.posMS
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -632,6 +804,32 @@ func (s *sim) routes() http.Handler {
 		writeJSON(w, out)
 	})
 	return mux
+}
+
+// deckState is the deck as the UI shows it; full adds the track and addresses. Caller holds s.mu.
+func (s *sim) deckState(full bool) map[string]any {
+	beat, bib := s.beatAt()
+	m := map[string]any{"number": s.number, "playing": s.playing, "pitch": s.pitch, "pitch_max": s.pitchMax,
+		"track_id": s.tracks[s.cur].ID, "position_ms": s.nowPos(), "beat": beat, "beat_in_bar": bib, "bpm": s.bpm(),
+		"effective_bpm": s.bpm() * (1 + s.pitch/100), "master": s.master, "sync": s.syncOn, "nudge": s.nudge,
+		"cue_ms": s.cueMS, "hot_cues": s.hotCues[s.tracks[s.cur].ID], "master_bpm": s.masterBPM,
+		"master_live": time.Since(s.masterSeen) < 2*time.Second, "phase_live": time.Since(s.masterAt) < 2*time.Second}
+	if full {
+		m["track"], m["ip"], m["portmap"] = s.tracks[s.cur], s.simIP.String(), s.nfs.PortmapPort()
+	}
+	return m
+}
+
+// track finds a track by ID; LINK loads can replace entries while handlers run.
+func (s *sim) track(id uint32) (track, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tracks {
+		if t.ID == id {
+			return t, true
+		}
+	}
+	return track{}, false
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

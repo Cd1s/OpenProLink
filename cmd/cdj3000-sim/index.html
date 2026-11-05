@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Virtual CDJ-3000 · EngineX OS Pro DJ Link simulator</title>
+<title>虚拟 CDJ-3000 · EngineX OS Pro DJ Link 模拟器</title>
 <style>
 :root { color-scheme: dark; --bg:#0b0c0e; --panel:#15171b; --line:#2a2d33; --text:#e6e6e6; --dim:#8a8f98; --accent:#ff7a00; --play:#2ecc71; --blue:#2d8cff; }
 * { box-sizing: border-box; }
@@ -23,11 +23,50 @@ button:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
 .lcd { font-family: "SF Mono", Menlo, monospace; }
 .big { font-size:28px; font-weight:600; }
 .dim { color:var(--dim); }
-canvas { width:100%; display:block; background:#000; border-radius:4px; }
-.beats { display:flex; gap:4px; }
-.beats span { width:28px; height:14px; border-radius:2px; background:#2a2d33; }
-.beats span.on { background:var(--accent); }
-.beats span.on.down { background:#ff3b30; }
+canvas { width:100%; height:60px; display:block; background:#000; border-radius:4px; }
+/* CDJ-3000 screen */
+.screen { background:#000; border:1px solid #2a2d33; border-radius:6px; padding:8px 10px; }
+.scr-top { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+.pnum { background:#fff; color:#000; font-weight:800; padding:1px 7px; border-radius:3px; font-size:12px; white-space:nowrap; }
+.scr-title { flex:1; min-width:0; }
+.scr-title b { display:block; font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.flag { font-size:11px; font-weight:800; letter-spacing:.06em; padding:1px 6px; border-radius:3px; color:#444; border:1px solid #333; background:transparent; }
+button.flag { cursor:pointer; }
+.flag.on { color:#111; background:#ff8c1a; border-color:#ff8c1a; }
+.phase { display:flex; gap:4px; margin:2px 0 6px; }
+.phase span { flex:1; height:9px; border:1px solid #ff8c1a; border-radius:1px; }
+.phase span.on { background:#ff8c1a; box-shadow:0 0 6px rgba(255,140,26,.7); }
+#zoom { height:160px; border-radius:0; }
+#overview { height:48px; margin-top:4px; border-radius:0; }
+.scr-bottom { display:grid; grid-template-columns:auto auto 1fr auto auto; gap:16px; align-items:end; margin-top:6px; }
+.k { font-size:10px; color:#8a8f98; letter-spacing:.08em; display:block; }
+.v { font:600 18px "SF Mono", Menlo, monospace; }
+.bpmv { font:700 30px "SF Mono", Menlo, monospace; }
+/* hardware */
+.pads { display:grid; grid-template-columns:repeat(8, 1fr); gap:6px; margin-top:12px; }
+.pad { padding:10px 0; font-weight:800; border-radius:4px; background:#1b1d22; }
+.pad.set { background:#123020; border-color:#2ecc71; color:#2ecc71; box-shadow:inset 0 0 10px rgba(46,204,113,.45); }
+.deck { display:grid; grid-template-columns:110px 1fr 150px; gap:14px; align-items:center; margin:12px 0; }
+.round { width:86px; height:86px; border-radius:50%; font-weight:800; border:4px solid #444; background:#141518; display:block; margin:10px auto; padding:0; }
+.round.cue { border-color:#ff8c1a; color:#ff8c1a; }
+.round.play { border-color:#2ecc71; color:#2ecc71; font-size:18px; }
+.round.on { color:#111; }
+.round.cue.on { background:#ff8c1a; } .round.play.on { background:#2ecc71; }
+.round.blink { animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { background:transparent; color:inherit; } }
+.jog { width:250px; height:250px; margin:auto; border-radius:50%; position:relative; touch-action:none; cursor:grab;
+  background:radial-gradient(circle, #191b20 0 33%, #000 34% 36%, #2a2d34 37% 92%, #3a3e46 93%); }
+.jog:focus-visible { outline:2px solid var(--blue); outline-offset:3px; }
+.jog .rot { position:absolute; inset:0; }
+.jog .rot::before { content:""; position:absolute; left:50%; top:6px; width:4px; height:34px; margin-left:-2px; background:#fff; border-radius:2px; }
+.jogc { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:13px; color:#ddd; pointer-events:none; }
+.tempo { display:flex; flex-direction:column; gap:6px; align-items:stretch; }
+.hw { font-weight:800; font-size:11px; letter-spacing:.06em; padding:8px 4px; }
+.hw.lit { background:#ff8c1a; border-color:#ff8c1a; color:#111; box-shadow:0 0 10px rgba(255,140,26,.7); }
+.ranges { display:grid; grid-template-columns:1fr 1fr; gap:4px; }
+.ranges button { padding:4px 0; font-size:11px; }
+.faderwrap { display:flex; flex-direction:column; align-items:center; font-weight:700; color:#8a8f98; }
+input.fader { flex:none; writing-mode:vertical-lr; width:34px; height:190px; }
 input[type=range] { flex:1; accent-color:var(--accent); }
 table { width:100%; border-collapse:collapse; }
 td, th { text-align:left; padding:3px 6px; border-bottom:1px solid #20232a; white-space:nowrap; }
@@ -36,7 +75,7 @@ tr.sel td { background:#2a1a08; }
 .tracks tr { cursor:pointer; }
 .wire { grid-column: 1 / -1; }
 .wire .scroll { max-height:280px; overflow:auto; }
-.wire td.hex { font-family: Menlo, monospace; font-size:11px; color:#9fb3c8; white-space:normal; word-break:break-all; }
+.wire td.hex { font-family: Menlo, monospace; font-size:11px; color:#9fb3c8; white-space:normal; overflow-wrap:anywhere; } /* not word-break:break-all: 5-10x slower layout in Chromium for these hex runs */
 .tag { display:inline-block; padding:0 6px; border-radius:3px; font-size:11px; background:#2a2d33; }
 .p12523 { background:#4b245f; } .p2049 { background:#245f5a; }
 .links li { cursor:pointer; padding:3px 6px; border-bottom:1px solid #20232a; list-style:none; }
@@ -48,94 +87,103 @@ tr.sel td { background:#2a1a08; }
 </head>
 <body>
 <header>
-  <h1>VIRTUAL CDJ-3000</h1>
-  <small>Software simulator for EngineX OS CDJ → Denon (#51, #59). Packet layouts from Deep Symmetry's protocol analysis, not a real-CDJ capture.</small>
+  <h1>虚拟 CDJ-3000</h1>
+  <small>EngineX OS 的 CDJ → Denon 软件模拟器（#51、#59）。报文格式来自 Deep Symmetry 的协议分析，不是真机抓包。</small>
 </header>
 <main>
   <section aria-labelledby="cdj-h">
     <h2 id="cdj-h">CDJ-3000 · USB /C/</h2>
-    <div class="row" role="group" aria-label="Player number">
-      <span class="dim">Player</span>
+    <div class="screen" aria-label="CDJ-3000 屏幕">
+      <div class="scr-top">
+        <span class="pnum" id="pnum">PLAYER 3</span>
+        <div class="scr-title"><b id="title">—</b><span class="dim" id="artist"></span></div>
+        <span class="flag" id="linkflag" title="Ableton Link">LINK</span><button class="flag" id="syncflag">SYNC</button><button class="flag" id="masterflag">MASTER</button>
+      </div>
+      <div class="phase" id="phase" aria-label="相位表：小节内第几拍"><span></span><span></span><span></span><span></span></div>
+      <canvas id="zoom" aria-label="滚动三频段波形与节拍网格"></canvas>
+      <canvas id="overview" aria-label="整曲概览与 cue 点"></canvas>
+      <div class="scr-bottom">
+        <div><span class="k">TRACK</span><span class="v" id="tracknum">01</span></div>
+        <div><span class="k">BAR.BEAT</span><span class="v" id="barbeat">1.1</span></div>
+        <div><span class="k">REMAIN</span><span class="v" id="remain">-0:00.0</span> <span class="dim lcd" id="elapsed"></span></div>
+        <div style="text-align:right"><span class="k">TEMPO <span id="range">±10</span></span><span class="v" id="tempo">+0.00%</span></div>
+        <div style="text-align:right"><span class="k">BPM</span><span class="bpmv" id="bpm">—</span></div>
+      </div>
+    </div>
+    <div class="pads" role="group" aria-label="Hot Cue A–H"><button class="pad" data-hc="A">A</button><button class="pad" data-hc="B">B</button><button class="pad" data-hc="C">C</button><button class="pad" data-hc="D">D</button><button class="pad" data-hc="E">E</button><button class="pad" data-hc="F">F</button><button class="pad" data-hc="G">G</button><button class="pad" data-hc="H">H</button></div>
+    <div class="deck">
+      <div>
+        <button id="cue" class="round cue">CUE</button>
+        <button id="play" class="round play" aria-label="播放 / 暂停">▶❚❚</button>
+      </div>
+      <div>
+        <div class="jog" id="jog" tabindex="0" role="slider" aria-label="Jog 转盘：拖动、滚轮或方向键微调相位"><div class="rot" id="jogrot"></div><div class="jogc lcd" id="jogtime"></div></div>
+        <div class="row" style="justify-content:center;margin-top:10px">
+          <button id="bendminus" class="hw">◀ PITCH BEND −</button><button id="bendplus" class="hw">+ PITCH BEND ▶</button>
+        </div>
+      </div>
+      <div class="tempo">
+        <button id="masterbtn" class="hw">MASTER</button>
+        <button id="syncbtn" class="hw">BEAT SYNC</button>
+        <div class="ranges" role="group" aria-label="TEMPO 范围"><button data-r="6">±6</button><button data-r="10">±10</button><button data-r="16">±16</button><button data-r="100">WIDE</button></div>
+        <div class="faderwrap"><span>−</span><input type="range" id="pitch" class="fader" min="-10" max="10" step="0.01" value="0" aria-label="TEMPO 推子"><span>+</span></div>
+        <div class="ranges"><button id="tminus" aria-label="Tempo −0.01%">−0.01</button><button id="tplus" aria-label="Tempo +0.01%">+0.01</button></div>
+        <button id="reset" class="hw">TEMPO RESET</button>
+      </div>
+    </div>
+    <div class="row" role="group" aria-label="播放器编号">
+      <span class="dim">播放器</span>
       <button data-n="1">1</button><button data-n="2">2</button><button data-n="3">3</button><button data-n="4">4</button>
       <span class="dim lcd" id="addr"></span>
-    </div>
-    <div class="row">
-      <div style="flex:1">
-        <div class="big" id="title">—</div>
-        <div class="dim" id="artist"></div>
-      </div>
-      <div style="text-align:right">
-        <div class="big lcd" id="bpm">—</div>
-        <div class="dim lcd" id="pitchval"></div>
-      </div>
-    </div>
-    <canvas id="zoom" height="140" aria-label="Scrolling waveform"></canvas>
-    <canvas id="overview" height="44" style="margin-top:6px" aria-label="Track overview"></canvas>
-    <div class="row" style="margin-top:10px">
-      <button id="cue">CUE</button>
-      <button id="play" class="play">▶ PLAY</button>
-      <div class="beats" id="beats" aria-label="Beat in bar"><span></span><span></span><span></span><span></span></div>
-      <span class="lcd" id="beatnum"></span>
-      <span class="lcd dim" id="time"></span>
-    </div>
-    <div class="row">
-      <label for="pitch" class="dim">Tempo</label>
-      <input type="range" id="pitch" min="-10" max="10" step="0.02" value="0">
-      <button id="reset">0%</button>
-    </div>
-    <div class="row" role="group" aria-label="Tempo range">
-      <span class="dim">Range</span>
-      <button data-r="6">±6%</button><button data-r="10">±10%</button><button data-r="16">±16%</button><button data-r="100">WIDE</button>
-      <label class="dim"><input type="checkbox" id="listen"> play audio in browser</label>
+      <label class="dim"><input type="checkbox" id="listen"> 在浏览器里放音频</label>
     </div>
     <audio id="audio" preload="auto"></audio>
-    <table class="tracks" aria-label="USB tracks"><thead><tr><th>#</th><th>Title</th><th>Artist</th><th>BPM</th><th>Path</th></tr></thead><tbody id="tracks"></tbody></table>
+    <table class="tracks" aria-label="U 盘曲目"><thead><tr><th>#</th><th>曲名</th><th>艺人</th><th>BPM</th><th>路径</th></tr></thead><tbody id="tracks"></tbody></table>
   </section>
 
   <section aria-labelledby="denon-h">
-    <h2 id="denon-h">Denon view · what EngineX receives</h2>
-    <table aria-label="Players EngineX sees"><thead><tr><th>Player</th><th>Model</th><th>Track</th><th>BPM</th><th>Pitch</th><th>Beat</th><th>State</th><th>Wave/Grid</th></tr></thead><tbody id="denon"></tbody></table>
-    <p class="dim" id="denon-empty">Waiting for the CDJ's keepalive…</p>
-    <canvas id="denonwave" height="60" style="margin-top:8px" aria-label="Waveform EngineX fetched over NFS"></canvas>
-    <p class="dim">Waveform and beatgrid above were fetched by EngineX from the CDJ over NFSv2 (#51).</p>
-    <h2 style="margin-top:16px">#59 · Import CDJ USB into Engine library</h2>
-    <div class="row"><button id="stage">Stage /C/ over NFS → rb-bridge</button><span id="stagemsg" class="dim"></span></div>
-    <table aria-label="Engine playlists"><tbody id="playlists"></tbody></table>
+    <h2 id="denon-h">Denon 视角 · EngineX 收到了什么</h2>
+    <table aria-label="EngineX 看到的播放器"><thead><tr><th>播放器</th><th>型号</th><th>曲目</th><th>BPM</th><th>Pitch</th><th>拍</th><th>状态</th><th>波形/网格</th></tr></thead><tbody id="denon"></tbody></table>
+    <p class="dim" id="denon-empty">等待 CDJ 的 keepalive…</p>
+    <canvas id="denonwave" height="60" style="margin-top:8px" aria-label="EngineX 经 NFS 取到的波形"></canvas>
+    <p class="dim">上面的波形和节拍网格是 EngineX 经 NFSv2 从 CDJ 取来的（#51）。</p>
+    <h2 style="margin-top:16px">#59 · 把 CDJ 的 U 盘导入 Engine 曲库</h2>
+    <div class="row"><button id="stage">经 NFS 暂存 /C/ → rb-bridge</button><span id="stagemsg" class="dim"></span></div>
+    <table aria-label="Engine 歌单"><tbody id="playlists"></tbody></table>
 
-    <h2 style="margin-top:16px">[LINK] Denon → CDJ-3000 · #63 preview (on hold)</h2>
+    <h2 style="margin-top:16px">[LINK] Denon → CDJ-3000 · #63</h2>
     <div class="row">
-      <span>Denon export: <b class="lcd" id="exportnum">—</b></span>
-      <button id="exporttoggle">Export ON</button>
+      <span>Denon 导出： <b class="lcd" id="exportnum">—</b></span>
+      <button id="exporttoggle">开启导出</button>
       <span class="dim lcd" id="exportaddr"></span>
     </div>
-    <p class="dim">Pick the same player number as the Denon above to watch it yield (4 → 3).</p>
+    <p class="dim">选和上面 Denon 相同的播放器编号，可以看到它让号（4 → 3）。</p>
     <ul class="dim lcd" id="yields" style="margin:0;padding-left:16px"></ul>
-    <div class="row" style="margin-top:8px"><button id="browse">[LINK: Browse Denon USB]</button><span id="crumbs" class="dim"></span></div>
-    <ul class="links" id="linkitems" aria-label="Denon USB browser"></ul>
+    <div class="row" style="margin-top:8px"><button id="browse">[LINK：浏览 Denon U 盘]</button><span id="crumbs" class="dim"></span></div>
+    <ul class="links" id="linkitems" aria-label="Denon U 盘浏览"></ul>
     <div id="linkmsg" class="dim"></div>
-    <canvas id="linkwave" height="60" aria-label="Waveform loaded from the Denon over NFS"></canvas>
-    <audio id="linkaudio" controls style="width:100%;margin-top:6px"></audio>
+    <canvas id="linkwave" height="60" aria-label="经 NFS 从 Denon 加载的波形"></canvas>
   </section>
 
   <section class="wire" aria-labelledby="wire-h">
-    <h2 id="wire-h">Wire inspector</h2>
-    <div class="row" role="group" aria-label="Filter">
+    <h2 id="wire-h">报文监视</h2>
+    <div class="row" role="group" aria-label="筛选">
       <label><input type="checkbox" data-p="50000" checked> 50000 keepalive</label>
       <label><input type="checkbox" data-p="50001" checked> 50001 beat</label>
-      <label><input type="checkbox" data-p="50002"> 50002 status (5/s)</label>
-      <label><input type="checkbox" data-p="0" checked> EngineX parsed</label>
+      <label><input type="checkbox" data-p="50002"> 50002 状态（每秒 5 个）</label>
+      <label><input type="checkbox" data-p="0" checked> EngineX 解析结果</label>
       <label><input type="checkbox" data-p="12523" checked> 12523 dbserver</label>
       <label><input type="checkbox" data-p="2049" checked> NFSv2</label>
-      <button id="pause">Pause</button>
+      <button id="pause">暂停</button>
     </div>
-    <div class="scroll"><table><thead><tr><th>Time</th><th>Direction</th><th>Port</th><th>Packet</th><th>Bytes</th><th>First 64 bytes</th></tr></thead><tbody id="wire"></tbody></table></div>
+    <div class="scroll"><table><thead><tr><th>时间</th><th>方向</th><th>端口</th><th>报文</th><th>字节</th><th>前 64 字节</th></tr></thead><tbody id="wire"></tbody></table></div>
   </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 let state = null, wave = {id: null, data: null}, dwave = {key: null, data: null}, paused = false;
 const post = (url, body) => fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-const control = body => post('/api/control', body).then(refresh);
+const control = body => post('/api/control', body).then(tick);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = ms => { const s = Math.max(0, ms) / 1000; return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`; };
 
@@ -144,99 +192,264 @@ document.querySelectorAll('[data-r]').forEach(b => b.onclick = () => control({pi
 $('play').onclick = () => control({playing: !state.cdj.playing});
 $('cue').onclick = () => control({cue: true});
 $('reset').onclick = () => control({pitch: 0});
+$('masterbtn').onclick = $('masterflag').onclick = () => control({master: !state.cdj.master});
+$('syncbtn').onclick = $('syncflag').onclick = () => control({sync: !state.cdj.sync});
+$('tminus').onclick = () => control({pitch: +(state.cdj.pitch - 0.01).toFixed(2)});
+$('tplus').onclick = () => control({pitch: +(state.cdj.pitch + 0.01).toFixed(2)});
+document.querySelectorAll('[data-hc]').forEach(b => b.onclick = () => control({hot_cue: b.dataset.hc}));
+// Pitch bend: held, it speeds the play head up or down; released, it springs back.
+for (const [id, v] of [['bendminus', -4], ['bendplus', 4]]) {
+  const b = $(id), on = () => control({nudge: v}), off = () => state.cdj.nudge && control({nudge: 0});
+  b.onpointerdown = on; b.onpointerup = b.onpointerleave = b.onpointercancel = off;
+  b.onkeydown = e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) on(); };
+  b.onkeyup = e => { if (e.key === ' ' || e.key === 'Enter') off(); };
+}
+// Jog wheel: rotation shifts the play head, 1 ms per degree while playing, 4 ms paused (scrub).
+let jogLast = null, jogAcc = 0;
+const jog = $('jog'), jogAngle = e => { const r = jog.getBoundingClientRect(); return Math.atan2(e.clientY - r.top - r.height / 2, e.clientX - r.left - r.width / 2) * 180 / Math.PI; };
+jog.onpointerdown = e => { jog.setPointerCapture(e.pointerId); jogLast = jogAngle(e); };
+jog.onpointermove = e => { if (jogLast === null) return; const a = jogAngle(e); jogAcc += ((a - jogLast + 540) % 360) - 180; jogLast = a; };
+jog.onpointerup = jog.onpointercancel = () => { jogLast = null; };
+jog.onwheel = e => { e.preventDefault(); jogAcc += e.deltaY / 4; };
+jog.onkeydown = e => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); jogAcc += e.key === 'ArrowRight' ? 10 : -10; } };
+setInterval(() => {
+  if (!jogAcc || !state) return;
+  const ms = jogAcc * (state.cdj.playing ? 1 : 4);
+  jogAcc = 0; anchor.pos += ms; control({shift_ms: ms});
+}, 50);
 $('pitch').oninput = e => control({pitch: +e.target.value});
-$('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? 'Resume' : 'Pause'; };
+$('pause').onclick = e => { paused = !paused; e.target.textContent = paused ? '继续' : '暂停'; };
 $('stage').onclick = async () => {
-  $('stagemsg').textContent = 'staging…';
+  $('stagemsg').textContent = '暂存中…';
   const r = await fetch('/api/stage', {method: 'POST'});
   if (!r.ok) { $('stagemsg').innerHTML = `<span class="err">${esc(await r.text())}</span>`; return; }
   const s = await r.json();
-  $('stagemsg').textContent = `${s.files} files over NFS, ${s.added} tracks added, ${s.ms} ms`;
+  $('stagemsg').textContent = `经 NFS 暂存 ${s.files} 个文件，新增 ${s.added} 首，${s.ms} ms`;
   refresh();
 };
 
 let linkWave = null;
 const KIND = {0x84: 'folder', 0x83: 'tracks', 1: 'folder', 8: 'playlist', 0x0704: 'track'};
 async function linkMenu(q, id, label) {
-  $('linkmsg').textContent = 'asking the Denon dbserver…';
+  $('linkmsg').textContent = '正在问 Denon 的 dbserver…';
   const r = await fetch(`/api/link/menu?q=${q}&id=${id || 0}`);
   if (!r.ok) { $('linkmsg').innerHTML = `<span class="err">${esc(await r.text())}</span>`; return; }
   const items = await r.json() || [];
-  $('linkmsg').textContent = `${items.length} items`;
+  $('linkmsg').textContent = `${items.length} 项`;
   $('crumbs').textContent = label || '';
   $('linkitems').innerHTML = items.map(x => `<li tabindex="0" data-id="${x.id}" data-kind="${x.kind}" data-label="${esc(x.label)}">${{folder: '📁', playlist: '♫', tracks: '≡', track: '▸'}[KIND[x.kind]] || '·'} ${esc(x.label)} <span class="dim">${esc(x.secondary)}</span></li>`).join('');
   $('linkitems').querySelectorAll('li').forEach(li => li.onclick = li.onkeydown = e => {
     if (e.type === 'keydown' && e.key !== 'Enter') return;
     const k = KIND[+li.dataset.kind], id = +li.dataset.id, name = li.dataset.label;
     if (k === 'track') return linkLoad(id, name);
-    if (k === 'tracks') return linkMenu('tracks', 0, 'TRACK');
+    if (k === 'tracks') return linkMenu('tracks', 0, '全部曲目');
     if (k === 'folder') return linkMenu('folder', +li.dataset.kind === 0x84 ? 0 : id, name);
     if (k === 'playlist') return linkMenu('playlist', id, name);
   });
 }
 async function linkLoad(id, name) {
-  $('linkmsg').textContent = `loading ${name} over NFSv2…`;
+  $('linkmsg').textContent = `正在经 NFSv2 加载 ${name}…`;
   const r = await fetch(`/api/link/load?id=${id}`, {method: 'POST'});
   if (!r.ok) { $('linkmsg').innerHTML = `<span class="err">${esc(await r.text())}</span>`; return; }
   linkWave = await r.json();
-  $('linkmsg').textContent = `${name}: ${(linkWave.audio_bytes / 1048576).toFixed(2)} MiB audio, ${(linkWave.waveform || []).length} waveform columns, ${(linkWave.beats || []).length} beats from Denon player ${linkWave.denon_player}`;
-  $('linkaudio').src = `/api/link/audio?t=${Date.now()}`;
+  refresh();
+  $('linkmsg').textContent = `已装上主 deck：${name}，音频在后台下载；波形 ${(linkWave.waveform || []).length} 列，${(linkWave.beats || []).length} 拍，来自 Denon 播放器 ${linkWave.denon_player}`;
 }
-$('browse').onclick = () => linkMenu('root', 0, 'root');
+$('browse').onclick = () => linkMenu('root', 0, '根目录');
 $('exporttoggle').onclick = () => fetch(`/api/export?enabled=${state.export.enabled ? 0 : 1}`, {method: 'POST'}).then(refresh);
 
-function drawWave(canvas, data, posFrac, windowFrac) {
-  const ctx = canvas.getContext('2d'), w = canvas.width = canvas.clientWidth * devicePixelRatio, h = canvas.height * 1;
-  ctx.clearRect(0, 0, w, h);
-  if (!data || !data.waveform || !data.waveform.length) { ctx.fillStyle = '#555'; ctx.fillText('no waveform', 8, 16); return; }
-  const cols = data.waveform, n = cols.length, start = windowFrac ? posFrac - windowFrac / 2 : 0, span = windowFrac || 1;
+// CDJ-3000 3-band colours and band scales as measured by Deep Symmetry's beat-link
+// (WaveformFinder.ThreeBandLayer, WaveformDetail.segmentHeight): low blue, mid amber,
+// their overlap brown, high a white core; heights low .4, mid .3, high .06 of the byte.
+const BAND = ['#2053d9', '#f2aa3c', '#a96b27', '#ffffff'];
+let anchor = {pos: 0, t: 0, rate: 0};
+
+function fit(c) {
+  const d = devicePixelRatio || 1, w = Math.round(c.clientWidth * d), h = Math.round(c.clientHeight * d);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const ctx = c.getContext('2d'); ctx.clearRect(0, 0, w, h);
+  return [ctx, w, h, d];
+}
+// Band peaks [low, mid, high] over waveform columns [c0, c1); interpolated when a column spans several pixels.
+function sample(wf, c0, c1) {
+  const n = wf.length;
+  if (c1 <= 0 || c0 >= n) return null;
+  if (c1 - c0 <= 1) {
+    const i = Math.max(0, Math.floor(c0)), f = Math.max(0, c0 - i), a = wf[i], b = wf[Math.min(n - 1, i + 1)];
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+  }
+  const v = [0, 0, 0];
+  for (let i = Math.max(0, Math.floor(c0)), e = Math.min(n, Math.ceil(c1)); i < e; i++) {
+    const p = wf[i]; if (p[0] > v[0]) v[0] = p[0]; if (p[1] > v[1]) v[1] = p[1]; if (p[2] > v[2]) v[2] = p[2];
+  }
+  return v;
+}
+// One device pixel per column, mirrored about the centre line, painted per colour in four fills.
+function draw3band(ctx, w, y0, h, colAt) {
+  const paths = [new Path2D(), new Path2D(), new Path2D(), new Path2D()], mid = y0 + h / 2, k = h / 2 / 51; // real PWV7 bytes peak near 127: low .4 x 127 fills the lane
   for (let x = 0; x < w; x++) {
-    const f = start + span * x / w;
-    if (f < 0 || f >= 1) continue;
-    const [lo, mid, hi] = cols[Math.min(n - 1, Math.floor(f * n))];
-    // CDJ-3000 3-band look: low blue, mid orange, high white, stacked from the centre.
-    const bars = [[lo, '#2d6cff'], [mid, '#ff8a2a'], [hi, '#f2f2f2']];
-    for (const [v, c] of bars) { const bh = v / 255 * h / 2; ctx.fillStyle = c; ctx.fillRect(x, h / 2 - bh, 1, bh * 2); }
+    const v = colAt(x); if (!v) continue;
+    const lo = Math.min(h / 2, v[0] * .4 * k), md = Math.min(h / 2, v[1] * .3 * k), hi = v[2] * .06 * k, big = Math.max(lo, md), small = Math.min(lo, md);
+    paths[lo > md ? 0 : 1].rect(x, mid - big, 1, 2 * big);
+    paths[2].rect(x, mid - small, 1, 2 * small);
+    paths[3].rect(x, mid - hi, 1, 2 * hi);
   }
-  const dur = data.duration_ms || 1;
-  ctx.fillStyle = 'rgba(255,255,255,.35)';
-  for (const b of data.beats || []) {
-    const f = b.time_ms / dur; if (f < start || f >= start + span) continue;
-    const x = (f - start) / span * w; ctx.fillRect(x, 0, b.beat === 1 ? 2 : 1, b.beat === 1 ? h : h * .15);
-  }
-  ctx.fillStyle = '#ff3b30';
-  ctx.fillRect(windowFrac ? w / 2 - 1 : posFrac * w - 1, 0, 2, h);
+  paths.forEach((p, i) => { ctx.fillStyle = BAND[i]; ctx.fill(p); });
+}
+function cueMarks() {
+  const c = state.cdj, m = Object.entries(c.hot_cues || {}).map(([l, ms]) => ({l, ms, col: '#2ecc71'}));
+  return [{l: '', ms: c.cue_ms, col: '#ff3b30'}, ...m];
+}
+// Beat at or before ms, by binary search over the grid.
+function beatAt(beats, ms) {
+  let lo = 0, hi = beats.length - 1;
+  if (hi < 0 || beats[0].time_ms > ms) return null;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (beats[m].time_ms <= ms) lo = m; else hi = m - 1; }
+  return beats[lo];
+}
+// Bar numbers for the grid; synthesise one from the BPM when the track has none.
+function prepWave(d, t) {
+  const dur = d.duration_ms || t.duration_ms || 1;
+  let beats = d.beats || [];
+  if (!beats.length && t.bpm) for (let i = 0, ms = 0; ms < dur; i++, ms = i * 60000 / t.bpm) beats.push({beat: i % 4 + 1, time_ms: ms});
+  let bar = 0;
+  for (const b of beats) { if (b.beat === 1 || !bar) bar++; b.bar = bar; }
+  return {...d, beats, duration_ms: dur};
 }
 
+function drawZoom(pos) {
+  const [ctx, w, h, d] = fit($('zoom')), wf = wave.data;
+  if (!wf || !wf.waveform || !wf.waveform.length) { ctx.fillStyle = '#555'; ctx.font = `${12 * d}px sans-serif`; ctx.fillText('没有波形', 8 * d, 18 * d); return; }
+  const cols = wf.waveform, perMs = cols.length / wf.duration_ms, span = 16 * 60000 / (state.cdj.bpm || 120), msPx = span / w, t0 = pos - span / 2;
+  const strip = 14 * d, laneH = h - 2 * strip;
+  draw3band(ctx, w, strip, laneH, x => { const a = t0 + x * msPx; return sample(cols, a * perMs, (a + msPx) * perMs); });
+  // Beatgrid: white beat ticks top and bottom, red downbeats with bar numbers.
+  ctx.font = `bold ${10 * d}px "SF Mono", Menlo, monospace`;
+  const beats = wf.beats;
+  let lo = 0, hi = beats.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (beats[m].time_ms < t0) lo = m + 1; else hi = m; }
+  for (let i = lo; i < beats.length && beats[i].time_ms <= t0 + span; i++) {
+    const b = beats[i], x = Math.round((b.time_ms - t0) / msPx), down = b.beat === 1, bw = down ? 2 * d : d;
+    ctx.fillStyle = down ? '#ff2a2a' : '#ffffff';
+    ctx.fillRect(x, down ? 0 : strip * .45, bw, down ? strip : strip * .55);
+    ctx.fillRect(x, h - strip, bw, down ? strip : strip * .55);
+    if (down) ctx.fillText(String(b.bar), x + 3 * d, 10 * d);
+  }
+  for (const m of cueMarks()) {
+    if (m.ms < t0 || m.ms > t0 + span) continue;
+    const x = Math.round((m.ms - t0) / msPx);
+    ctx.fillStyle = m.col; ctx.globalAlpha = .8; ctx.fillRect(x, strip, d, laneH); ctx.globalAlpha = 1;
+    if (m.l) { ctx.fillRect(x, h - strip, 12 * d, strip); ctx.fillStyle = '#000'; ctx.fillText(m.l, x + 3 * d, h - 3 * d); }
+    else { ctx.beginPath(); ctx.moveTo(x - 6 * d, strip); ctx.lineTo(x + 6 * d, strip); ctx.lineTo(x, strip + 8 * d); ctx.fill(); }
+  }
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(Math.round(w / 2) - d, 0, 2 * d, h);
+}
+
+function drawOverview(c, wf, pos, marks) {
+  const [ctx, w, h, d] = fit(c);
+  if (!wf || !wf.waveform || !wf.waveform.length) { ctx.fillStyle = '#555'; ctx.font = `${11 * d}px sans-serif`; ctx.fillText('没有波形', 8 * d, 16 * d); return; }
+  const cols = wf.waveform, n = cols.length, dur = wf.duration_ms || 1, lane = h - 8 * d;
+  // The whole-track waveform is static: render it once per track and size, then blit it each frame.
+  if (!c.cache || c.cache.wf !== wf || c.cache.width !== w || c.cache.height !== h) {
+    c.cache = Object.assign(document.createElement('canvas'), {width: w, height: h});
+    c.cache.wf = wf;
+    draw3band(c.cache.getContext('2d'), w, 0, lane, x => sample(cols, x * n / w, (x + 1) * n / w));
+  }
+  ctx.drawImage(c.cache, 0, 0);
+  if (pos === null) return;
+  ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(0, 0, pos / dur * w, lane); // played part dimmed
+  ctx.fillStyle = '#777';
+  for (let m = 60000; m < dur; m += 60000) ctx.fillRect(Math.round(m / dur * w), lane, d, 8 * d); // minute ticks
+  for (const m of marks || []) { ctx.fillStyle = m.col; ctx.fillRect(Math.round(m.ms / dur * w) - d, lane, 3 * d, 8 * d); }
+  ctx.fillStyle = '#fff'; ctx.fillRect(Math.round(pos / dur * w) - d, 0, 2 * d, h);
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!state) return;
+  const c = state.cdj, t = c.track, dur = t.duration_ms || 1;
+  const pos = Math.max(0, Math.min(dur, anchor.pos + (now - anchor.t) * anchor.rate));
+  drawZoom(pos);
+  drawOverview($('overview'), wave.data, pos, cueMarks());
+  const b = wave.data && beatAt(wave.data.beats, pos), bib = b ? b.beat : c.beat_in_bar;
+  if (bib !== lastBib) { lastBib = bib; [...$('phase').children].forEach((s, i) => s.classList.toggle('on', i < bib)); }
+  setText('barbeat', b ? `${b.bar}.${b.beat}` : `—`);
+  setText('remain', '-' + fmt(dur - pos));
+  setText('elapsed', fmt(pos));
+  setText('jogtime', fmt(pos));
+  $('jogrot').style.transform = `rotate(${(pos / 1800 * 360) % 360}deg)`; // 33⅓ rpm
+}
+let lastBib = 0;
+const shown = {}, setText = (id, v) => { if (shown[id] !== v) { shown[id] = v; $(id).textContent = v; } };
+requestAnimationFrame(frame);
+
+// tick: the deck only, ~400 bytes, 10 times a second. A new track pulls the full state.
+let ticking = false;
+async function tick() {
+  if (!state || ticking) return;
+  ticking = true;
+  try {
+    const r = await fetch('/api/tick'); if (!r.ok) return;
+    const d = await r.json();
+    if (d.cdj.track_id !== state.cdj.track.id) return refresh();
+    Object.assign(state.cdj, d.cdj); state.ableton_link = d.ableton_link; state.link_audio = d.link_audio;
+    renderDeck();
+  } finally { ticking = false; }
+}
+
+// refresh: everything, including the wire log and track list, once a second.
 async function refresh() {
   const r = await fetch('/api/state'); if (!r.ok) return;
   state = await r.json();
+  renderDeck();
+  renderRest();
+}
+
+function renderDeck() {
   const c = state.cdj, t = c.track;
   document.querySelectorAll('[data-n]').forEach(b => b.classList.toggle('on', +b.dataset.n === c.number));
   document.querySelectorAll('[data-r]').forEach(b => b.classList.toggle('on', +b.dataset.r === c.pitch_max));
+  anchor = {pos: c.position_ms, t: performance.now(), rate: c.playing ? 1 + (c.pitch + c.nudge) / 100 : 0};
   $('addr').textContent = `${c.ip} · portmap ${c.portmap}`;
+  $('pnum').textContent = `PLAYER ${c.number}`;
   $('title').textContent = t.title || `Track ${t.id}`;
   $('artist').textContent = t.artist || '';
+  $('tracknum').textContent = String(state.tracks.findIndex(x => x.id === t.id) + 1).padStart(2, '0');
   $('bpm').textContent = c.effective_bpm.toFixed(2);
-  $('pitchval').textContent = `${c.pitch >= 0 ? '+' : ''}${c.pitch.toFixed(2)}% · ${c.bpm.toFixed(2)} BPM`;
+  $('tempo').textContent = `${c.pitch >= 0 ? '+' : ''}${c.pitch.toFixed(2)}%`;
+  $('range').textContent = c.pitch_max === 100 ? 'WIDE' : `±${c.pitch_max}`;
   const p = $('pitch'); p.min = -c.pitch_max; p.max = c.pitch_max; if (document.activeElement !== p) p.value = c.pitch;
-  $('play').classList.toggle('on', c.playing); $('play').textContent = c.playing ? '❚❚ PAUSE' : '▶ PLAY';
-  [...$('beats').children].forEach((s, i) => { s.classList.toggle('on', i + 1 === c.beat_in_bar); s.classList.toggle('down', i === 0); });
-  $('beatnum').textContent = `beat ${c.beat} · ${c.beat_in_bar}/4`;
-  $('time').textContent = `${fmt(c.position_ms)} / ${fmt(t.duration_ms)}`;
-  if (wave.id !== t.id) { wave = {id: t.id, data: null}; fetch(`/api/waveform?id=${t.id}`).then(r => r.json()).then(d => { if (wave.id === t.id) wave.data = d; }); $('audio').src = `/audio?id=${t.id}`; }
-  const pos = c.position_ms / (t.duration_ms || 1);
-  drawWave($('zoom'), wave.data, pos, 0.12);
-  drawWave($('overview'), wave.data, pos, 0);
+  $('masterbtn').classList.toggle('lit', c.master); $('masterflag').classList.toggle('on', c.master);
+  $('syncbtn').classList.toggle('lit', c.sync); $('syncflag').classList.toggle('on', c.sync);
+  const ab = state.ableton_link;
+  $('linkflag').hidden = !ab; $('linkflag').classList.toggle('on', !!ab && ab.joined > 0);
+  if (ab) $('linkflag').textContent = `LINK ${ab.joined}/${ab.peers}`;
+  $('syncbtn').title = !c.master_live ? '网络上没有别的 master' : c.phase_live ? `对速 + 对拍：跟随 master ${c.master_bpm.toFixed(2)} BPM` :
+    `只对速：跟随 master ${c.master_bpm.toFixed(2)} BPM；没有相位来源（碟机未发节拍包，也没开 Ableton Link）`;
+  $('play').classList.toggle('on', c.playing); $('play').classList.toggle('blink', !c.playing);
+  const atCue = !c.playing && Math.abs(c.position_ms - c.cue_ms) < 1;
+  $('cue').classList.toggle('on', atCue); $('cue').classList.toggle('blink', !c.playing && !atCue);
+  document.querySelectorAll('[data-hc]').forEach(b => b.classList.toggle('set', !!(c.hot_cues && b.dataset.hc in c.hot_cues)));
+  const la = state.link_audio || {}, audioKey = `${t.id}:${t.remote ? la.bytes : 0}`;
+  if (t.remote && la.error) $('linkmsg').innerHTML = `<span class="err">${esc(la.error)}</span>`;
+  if (wave.audio !== audioKey && (!t.remote || la.bytes)) { wave.audio = audioKey; $('audio').src = `/audio?id=${t.id}`; }
+  if (wave.id !== t.id) { wave = {id: t.id, data: null, audio: wave.audio}; fetch(`/api/waveform?id=${t.id}`).then(r => r.json()).then(d => { if (wave.id === t.id) wave.data = prepWave(d, t); }); }
   const a = $('audio');
   if ($('listen').checked && c.playing) {
-    a.preservesPitch = false; a.playbackRate = 1 + c.pitch / 100;
+    a.preservesPitch = false; a.playbackRate = anchor.rate;
     if (Math.abs(a.currentTime * 1000 - c.position_ms) > 300) a.currentTime = c.position_ms / 1000;
     if (a.paused) a.play().catch(() => {});
   } else if (!a.paused) a.pause();
+}
 
-  $('tracks').innerHTML = state.tracks.map(x => `<tr data-id="${x.id}" class="${x.id === t.id ? 'sel' : ''}"><td>${x.id}</td><td>${esc(x.title)}</td><td>${esc(x.artist)}</td><td>${x.bpm ? x.bpm.toFixed(2) : ''}</td><td class="dim">${esc(x.path)}</td></tr>`).join('');
+let wireKey = '', tracksKey = '';
+function renderRest() {
+  const t = state.cdj.track, tk = `${t.id}:${state.tracks.map(x => x.id).join()}`;
+  if (tk !== tracksKey) {
+    tracksKey = tk;
+  $('tracks').innerHTML = state.tracks.map(x => `<tr data-id="${x.id}" class="${x.id === t.id ? 'sel' : ''}"><td>${x.remote ? 'LINK ' + x.remote_id : x.id}</td><td>${esc(x.title)}</td><td>${esc(x.artist)}</td><td>${x.bpm ? x.bpm.toFixed(2) : ''}</td><td class="dim">${esc(x.path)}</td></tr>`).join('');
   $('tracks').querySelectorAll('tr').forEach(row => row.onclick = () => control({track: +row.dataset.id}));
+  }
 
   const d = state.denon;
   $('denon-empty').hidden = d.length > 0;
@@ -245,23 +458,24 @@ async function refresh() {
   if (seen) {
     const key = `${seen.number}:${seen.track_id}`;
     if (dwave.key !== key) { dwave = {key, data: null}; fetch(`/api/waveform?side=denon&id=${seen.track_id}`).then(r => r.json()).then(x => { if (dwave.key === key) dwave.data = x; }); }
-    drawWave($('denonwave'), dwave.data, (seen.play_position_ms || 0) / ((dwave.data && dwave.data.duration_ms) || 1), 0);
+    drawOverview($('denonwave'), dwave.data, seen.play_position_ms || 0);
   }
   const ex = state.export || {};
-  $('exportnum').textContent = ex.enabled ? (ex.number ? `Player ${ex.number}` : 'probing…') : 'off';
-  $('exporttoggle').textContent = ex.enabled ? 'Export OFF' : 'Export ON';
-  $('exportaddr').textContent = ex.enabled ? `dbserver ${ex.dbAddress} · portmap ${ex.portmapPort}` : '';
+  $('exportnum').textContent = ex.enabled ? (ex.number ? `播放器 ${ex.number}` : '探测中…') : '关';
+  $('exporttoggle').textContent = ex.enabled ? '关闭导出' : '开启导出';
+  $('exportaddr').textContent = state.deck ? `LINK 直连真碟机 ${state.deck}：dbserver 12523，NFS portmap 111` : ex.enabled ? `dbserver ${ex.dbAddress} · portmap ${ex.portmapPort}` : '';
   $('yields').innerHTML = (state.yields || []).map(y => `<li>${esc(y)}</li>`).join('');
-  const la = $('linkaudio'), lp = linkWave && la.duration ? la.currentTime * 1000 / (linkWave.duration_ms || la.duration * 1000) : 0;
-  drawWave($('linkwave'), linkWave, lp, 0);
+  drawOverview($('linkwave'), linkWave, null);
   if (state.staged) $('playlists').innerHTML = state.staged.playlists.map(p => `<tr><td>${esc(p.title)}</td><td class="dim">${p.tracks} tracks</td></tr>`).join('');
 
-  if (!paused) {
+  const last = (state.wire || []).at(-1), wk = last ? `${last.at}${last.kind}${state.wire.length}` : '';
+  if (!paused && wk !== wireKey) {
+    wireKey = wk;
     const on = new Set([...document.querySelectorAll('[data-p]')].filter(x => x.checked).map(x => +x.dataset.p));
     $('wire').innerHTML = (state.wire || []).filter(e => on.has(e.port)).reverse().slice(0, 80).map(e => `<tr><td class="lcd">${e.at}</td><td>${esc(e.dir)}</td><td><span class="tag p${e.port}">${e.port || '—'}</span></td><td>${esc(e.kind)}</td><td>${e.len || ''}</td><td class="hex">${e.hex || ''}</td></tr>`).join('');
   }
 }
-refresh(); setInterval(refresh, 150);
+refresh(); setInterval(tick, 100); setInterval(refresh, 1000);
 </script>
 </body>
 </html>

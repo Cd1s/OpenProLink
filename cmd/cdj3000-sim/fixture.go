@@ -96,7 +96,7 @@ func drumTrack() (wav, dat, ext, ex2 []byte) {
 		binary.LittleEndian.PutUint16(wav[44+2*i:], uint16(int16(v*30000)))
 	}
 
-	// Per-column band peaks, scaled so each band's loudest column is 240.
+	// Per-column band peaks, scaled so each band's loudest column is 120 (real PWV7 bytes stay under 128).
 	n := total * cols / rate
 	peaks := make([][3]float64, n)
 	var top [3]float64
@@ -121,7 +121,7 @@ func drumTrack() (wav, dat, ext, ex2 []byte) {
 		for k := range v {
 			v[k] = p[k] / top[k]
 		}
-		pwv7[12+3*c], pwv7[13+3*c], pwv7[14+3*c] = byte(v[1]*240), byte(v[2]*240), byte(v[0]*240)
+		pwv7[12+3*c], pwv7[13+3*c], pwv7[14+3*c] = byte(v[1]*120), byte(v[2]*120), byte(v[0]*120)
 		height := math.Min(1, math.Max(v[0], math.Max(v[1], v[2])))
 		rgb := uint16(v[0]*7)<<13 | uint16(v[1]*7)<<10 | uint16(v[2]*7)<<7 | uint16(height*31)<<2
 		binary.BigEndian.PutUint16(pwv5[12+2*c:], rgb)

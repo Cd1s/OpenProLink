@@ -319,7 +319,7 @@ func NewCDJ3000StatusPacket(s Status) []byte {
 	copy(b[0x7c:0x80], fw)
 
 	// Status flags
-	var flags byte = 0xb8 // default base
+	var flags byte = 0x84 // bits 7 and 2 always set (dysentery vcdj.adoc); 0xb8 forced master, sync and on-air on
 	if s.Playing {
 		flags |= FlagPlay
 	} else {
@@ -510,7 +510,7 @@ func NewCDJ2000NXS2StatusPacket(s Status) []byte {
 	}
 	copy(b[0x7c:0x80], fw)
 
-	var flags byte = 0xb8
+	var flags byte = 0x84 // bits 7 and 2 always set, as above
 	if s.Playing {
 		flags |= FlagPlay
 	} else {
