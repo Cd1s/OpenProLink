@@ -14,7 +14,7 @@
 | **Device under test** | The [EngineX OS](https://github.com/Cd1s/EngineX-OS) Pro DJ Link receiver running in-process: the players, BPM, pitch, beat and play state it decodes, and the waveform it fetched over NFS |
 | **CDJ → Denon import** | Copies the virtual USB over NFSv2 and runs EngineX's rb-bridge, then lists the Engine playlists it built |
 | **[LINK] Denon → CDJ** | Browses the EngineX export with a dbserver client (TCP 12523), loads a track over NFSv2, shows its waveform and plays it; shows the export yielding its player number on a collision |
-| **Wire inspector** | UDP 50000 keepalive, 50001 beat, 50002 status, dbserver requests and NFS reads, with the first bytes of each in hex |
+| **Wire inspector** | UDP 50000 keepalive, 50001 beat + 30 ms `0x0b` playhead, 50002 status + `0x05/0x06` media query, dbserver requests and NFS reads, with the first bytes of each in hex |
 
 The default USB stick is generated: 32 bars of 120 BPM drums with a matching beatgrid, PWV5 colour and PWV7 3-band waveforms. Pass `-usb` to use a real rekordbox export.
 
@@ -47,7 +47,8 @@ open http://127.0.0.1:18300
 
 | Path | Contents |
 | --- | --- |
-| `cmd/cdj3000-sim/` | The simulator: packet builders, dbserver client, generated USB stick, web UI |
+| `cmd/cdj3000-sim/` | The simulator: playhead clock, generated USB stick, reverse link and web UI |
+| `pkg/cdj/` | Independent CDJ-side packet builders/parsers (`0x06`, `0x0a`, `0x28`, `0x0b`, `0x05/0x06`), dbserver client, ANLZ parser and captured-wire tests |
 | `third_party/enginex/` | Read-only copy of the EngineX OS packages under test. Refresh with `scripts/sync-enginex.sh`, never edit |
 | `docs/ARCHITECTURE.md` | Components, data flow, test strategy and roadmap |
 | `docs/PROLINK-WIRE-SPEC.md` | Every packet the simulator sends or parses, byte by byte |

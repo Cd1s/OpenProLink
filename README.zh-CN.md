@@ -14,7 +14,7 @@
 | **被测设备** | 进程内运行 [EngineX OS](https://github.com/Cd1s/EngineX-OS) 的 Pro DJ Link 接收端：它识别出的碟机、BPM、pitch、拍号、播放状态，以及它经 NFS 取到的波形 |
 | **CDJ → Denon 导入** | 经 NFSv2 拷贝虚拟 U 盘并运行 EngineX 的 rb-bridge，列出生成的 Engine 歌单 |
 | **[LINK] Denon → CDJ** | 用 dbserver 客户端（TCP 12523）浏览 EngineX 导出、经 NFSv2 加载曲目、显示波形并播放；演示机号冲突时导出端自动让位 |
-| **抓包面板** | UDP 50000 keepalive、50001 beat、50002 status、dbserver 请求与 NFS 读取，附每个包开头的十六进制 |
+| **抓包面板** | UDP 50000 keepalive、50001 beat 与 30 ms `0x0b` 精确播放头、50002 status 与 `0x05/0x06` 媒介查询、dbserver 请求与 NFS 读取，附每个包开头的十六进制 |
 
 默认 U 盘是生成的：32 小节 120 BPM 鼓组，带对应的 beatgrid、PWV5 彩色波形和 PWV7 三段波形。用 `-usb` 指定真实的 rekordbox 导出。
 
@@ -47,7 +47,8 @@ open http://127.0.0.1:18300
 
 | 路径 | 内容 |
 | --- | --- |
-| `cmd/cdj3000-sim/` | 模拟器：发包、dbserver 客户端、生成的 U 盘、网页 |
+| `cmd/cdj3000-sim/` | 模拟器：播放时钟、生成的 U 盘、反向 Link 与网页 |
+| `pkg/cdj/` | 独立的 CDJ 侧报文构造/解析（`0x06`、`0x0a`、`0x28`、`0x0b`、`0x05/0x06`）、dbserver 客户端、ANLZ 解析与实机抓包对表测试 |
 | `third_party/enginex/` | 被测的 EngineX OS 代码只读副本，用 `scripts/sync-enginex.sh` 更新，不要直接改 |
 | `docs/ARCHITECTURE.md` | 组件、数据流、测试策略与路线图 |
 | `docs/PROLINK-WIRE-SPEC.md` | 模拟器收发的每个包，逐字节说明 |

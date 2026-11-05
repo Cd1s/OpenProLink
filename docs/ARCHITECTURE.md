@@ -27,9 +27,10 @@ Today the device under test is EngineX OS (Denon / Numark decks): CDJ → Denon 
 
 | Piece | File | Notes |
 | --- | --- | --- |
-| Packet builders, play head, beat clock | `cmd/cdj3000-sim/main.go` | Status every 200 ms, keepalive every 1.5 s and at once on a number change, beat packet on each beat while playing |
+| CDJ wire protocol, dbserver client, ANLZ | `pkg/cdj/` | Independent builders/parsers (`0x06` keepalive, `0x0a` status, `0x28` beat, `0x0b` 30 ms playhead, `0x05/0x06` media query/response), TCP 12523 client, ANLZ (`PQTZ`/`PWV5`/`PWV7`), captured-wire tests |
+| Play head, beat clock, HTTP control | `cmd/cdj3000-sim/main.go` | Status every 200 ms, keepalive every 1.5 s and at once on a number change, `0x0b` playhead every 30 ms, beat packet on each beat while playing |
 | Generated USB stick | `cmd/cdj3000-sim/fixture.go` | 64 s of drums at 120 BPM; audio, PQTZ, PWV5 and PWV7 come from the same synthesized bands |
-| dbserver client, reverse link, collision watch | `cmd/cdj3000-sim/link.go` | Written from the protocol analysis, not from the device's encoder |
+| Reverse link, media query reply, collision watch | `cmd/cdj3000-sim/link.go` | Uses `pkg/cdj` dbserver client and replies `0x06` to incoming `0x05` media queries |
 | Web UI | `cmd/cdj3000-sim/index.html` | No build step, no external assets |
 | Device under test | `third_party/enginex/` | Synced by `scripts/sync-enginex.sh`; `VERSION` records the source commit |
 

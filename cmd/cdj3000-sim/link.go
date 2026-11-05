@@ -15,10 +15,9 @@ import (
 	"net/http"
 	"path"
 	"strconv"
-	"strings"
 	"time"
-	"unicode/utf16"
 
+	"github.com/Cd1s/OpenCDJ-3000/pkg/cdj"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/rekordbox"
 )
@@ -51,29 +50,67 @@ func (s *sim) listenDenon(ctx context.Context, port int) error {
 		defer c.Close()
 		b := make([]byte, 2048)
 		for {
-			n, _, err := c.ReadFromUDP(b)
+			n, addr, err := c.ReadFromUDP(b)
 			if err != nil {
 				return
 			}
 			p := b[:n]
-			if n < 0x25 || !bytes.HasPrefix(p, []byte("Qspt1WmJOL")) {
+			if n < 0x25 || !bytes.HasPrefix(p, cdj.MagicHeader) {
 				continue
 			}
 			kind := fmt.Sprintf("0x%02x", p[10])
 			s.mu.Lock()
-			if port == 50000 && p[10] == 6 && n >= 0x30 {
-				kind = fmt.Sprintf("keepalive 0x06, player %d", p[0x24])
-				if old := s.denonPlayer; old != p[0x24] {
-					if old != 0 {
-						s.yields = append(s.yields, fmt.Sprintf("%s Denon player %d → %d", time.Now().Format("15:04:05.000"), old, p[0x24]))
+			simNum := s.number
+			trackCount := uint16(len(s.tracks))
+			if port == cdj.PortDiscovery && p[10] == cdj.TypeKeepalive && n >= 0x30 {
+				if kp, err := cdj.ParseKeepalivePacket(p); err == nil {
+					kind = fmt.Sprintf("keepalive 0x06, player %d", kp.PlayerNumber)
+					if old := s.denonPlayer; old != kp.PlayerNumber {
+						if old != 0 {
+							s.yields = append(s.yields, fmt.Sprintf("%s Denon player %d → %d", time.Now().Format("15:04:05.000"), old, kp.PlayerNumber))
+						}
+						s.denonPlayer = kp.PlayerNumber
 					}
-					s.denonPlayer = p[0x24]
 				}
-			} else if port == 50002 {
-				kind = fmt.Sprintf("status 0x%02x, %d bytes", p[10], n)
+			} else if port == cdj.PortStatus {
+				if p[10] == cdj.TypeMediaQuery {
+					kind = fmt.Sprintf("media query 0x05, %d bytes", n)
+				} else {
+					kind = fmt.Sprintf("status 0x%02x, %d bytes", p[10], n)
+				}
 			}
 			s.mu.Unlock()
 			s.log("Denon → CDJ", port, kind, p)
+
+			if port == cdj.PortStatus && p[10] == cdj.TypeMediaQuery {
+				if q, err := cdj.ParseMediaQueryPacket(p); err == nil {
+					if (q.TargetPlayer == simNum || q.TargetPlayer == 0) && q.TargetSlot == cdj.SlotUSB {
+						resp := cdj.NewMediaResponsePacket(cdj.MediaResponse{
+							DeviceName:    "CDJ-3000",
+							PlayerNumber:  simNum,
+							TargetPlayer:  simNum,
+							TargetSlot:    cdj.SlotUSB,
+							MediaName:     "OPENCDJ-USB",
+							CreatedDate:   "2026-11-05",
+							TrackCount:    trackCount,
+							PlaylistCount: 1,
+							UIColor:       6,
+							TrackType:     cdj.TrackTypeRekordbox,
+							HasSettings:   true,
+							TotalBytes:    32 << 30,
+							FreeBytes:     28 << 30,
+						})
+						replyAddr := addr
+						if replyAddr == nil && q.ReplyIP != nil && !q.ReplyIP.IsUnspecified() {
+							replyAddr = &net.UDPAddr{IP: q.ReplyIP, Port: cdj.PortStatus}
+						}
+						if replyAddr != nil {
+							_, _ = c.WriteToUDP(resp, replyAddr)
+							s.log("CDJ → Denon", cdj.PortStatus, "media response 0x06", resp)
+						}
+					}
+				}
+			}
 		}
 	}()
 	return nil
@@ -86,74 +123,10 @@ type dbConn struct {
 	s    *sim
 }
 
-func dbRequest(tx uint32, kind uint16, args ...uint32) []byte {
-	b := []byte{0x11, 0x87, 0x23, 0x49, 0xae, 0x11}
-	b = binary.BigEndian.AppendUint32(b, tx)
-	b = append(b, 0x10, byte(kind>>8), byte(kind), 0x0f, byte(len(args)), 0x14, 0, 0, 0, 12)
-	tags := make([]byte, 12)
-	for i := range args {
-		tags[i] = 6
-	}
-	b = append(b, tags...)
-	for _, a := range args {
-		b = append(b, 0x11)
-		b = binary.BigEndian.AppendUint32(b, a)
-	}
-	return b
-}
-
-type dbMsg struct {
-	kind uint16
-	nums []uint32
-	text map[int]string
-}
-
-func (d *dbConn) read() (dbMsg, error) {
-	h := make([]byte, 32)
-	if _, err := io.ReadFull(d.c, h); err != nil {
-		return dbMsg{}, err
-	}
-	if !bytes.Equal(h[:5], []byte{0x11, 0x87, 0x23, 0x49, 0xae}) || h[14] > 12 {
-		return dbMsg{}, fmt.Errorf("dbserver: bad message header %x", h)
-	}
-	m := dbMsg{kind: binary.BigEndian.Uint16(h[11:]), text: map[int]string{}}
-	for i := range int(h[14]) {
-		f := make([]byte, 5)
-		if _, err := io.ReadFull(d.c, f); err != nil {
-			return m, err
-		}
-		n := binary.BigEndian.Uint32(f[1:])
-		m.nums = append(m.nums, n)
-		switch f[0] {
-		case 0x26: // UTF-16BE, n code units with the NUL
-			if n == 0 || n > 65536 {
-				return m, fmt.Errorf("dbserver: bad string length %d", n)
-			}
-			raw := make([]byte, 2*n)
-			if _, err := io.ReadFull(d.c, raw); err != nil {
-				return m, err
-			}
-			u := make([]uint16, n-1)
-			for j := range u {
-				u[j] = binary.BigEndian.Uint16(raw[2*j:])
-			}
-			m.text[i] = string(utf16.Decode(u))
-		case 0x14:
-			if n > 1<<20 {
-				return m, fmt.Errorf("dbserver: blob of %d bytes", n)
-			}
-			if _, err := io.CopyN(io.Discard, d.c, int64(n)); err != nil {
-				return m, err
-			}
-		}
-	}
-	return m, nil
-}
-
 func (d *dbConn) send(kind uint16, args ...uint32) error {
 	d.tx++
-	b := dbRequest(d.tx, kind, args...)
-	d.s.log("CDJ → Denon", 12523, fmt.Sprintf("dbserver request 0x%04x", kind), b)
+	b := cdj.EncodeDBRequest(d.tx, kind, args...)
+	d.s.log("CDJ → Denon", cdj.PortDBServer, fmt.Sprintf("dbserver request 0x%04x", kind), b)
 	_, err := d.c.Write(b)
 	return err
 }
@@ -179,7 +152,7 @@ func (s *sim) dialDB(addr string, me byte) (*dbConn, error) {
 		return nil, err
 	}
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-	d := &dbConn{c: c, tx: 0, dmst: uint32(me)<<24 | 1<<16 | 3<<8 | 1, s: s}
+	d := &dbConn{c: c, tx: 0, dmst: cdj.BuildDMST(me, 1, cdj.SlotUSB, cdj.TrackTypeRekordbox), s: s}
 	var greeting [5]byte
 	if _, err = c.Write([]byte{0x11, 0, 0, 0, 1}); err == nil {
 		_, err = io.ReadFull(c, greeting[:])
@@ -189,12 +162,12 @@ func (s *sim) dialDB(addr string, me byte) (*dbConn, error) {
 		return nil, fmt.Errorf("greeting: %v %x", err, greeting)
 	}
 	d.tx = 0xfffffffe - 1 // setup uses 0xfffffffe
-	if err = d.send(0, uint32(me)); err == nil {
-		var m dbMsg
-		if m, err = d.read(); err == nil && (m.kind != 0x4000 || len(m.nums) < 2) {
-			err = fmt.Errorf("setup answered 0x%04x", m.kind)
+	if err = d.send(cdj.KindSetup, uint32(me)); err == nil {
+		var m *cdj.DBMessage
+		if m, err = cdj.DecodeDBMessage(d.c); err == nil && (m.Kind != cdj.KindSetupAck || len(m.Args) < 2) {
+			err = fmt.Errorf("setup answered 0x%04x", m.Kind)
 		} else if err == nil {
-			s.log("Denon → CDJ", 12523, fmt.Sprintf("dbserver setup: Denon is player %d", m.nums[1]), nil)
+			s.log("Denon → CDJ", cdj.PortDBServer, fmt.Sprintf("dbserver setup: Denon is player %d", m.Args[1].Num), nil)
 		}
 	}
 	if err != nil {
@@ -217,35 +190,38 @@ func (d *dbConn) menu(kind uint16, args ...uint32) ([]linkItem, error) {
 	if err := d.send(kind, append([]uint32{d.dmst}, args...)...); err != nil {
 		return nil, err
 	}
-	m, err := d.read()
+	m, err := cdj.DecodeDBMessage(d.c)
 	if err != nil {
 		return nil, err
 	}
-	if m.kind != 0x4000 || len(m.nums) < 2 {
-		return nil, fmt.Errorf("dbserver 0x%04x answered 0x%04x", kind, m.kind)
+	if m.Kind != cdj.KindSetupAck || len(m.Args) < 2 {
+		return nil, fmt.Errorf("dbserver 0x%04x answered 0x%04x", kind, m.Kind)
 	}
-	count := m.nums[1]
+	count := m.Args[1].Num
 	var items []linkItem
 	for off := uint32(0); off < count; off += 64 {
 		n := min(64, count-off)
-		if err := d.send(0x3000, d.dmst, off, n, 0, count, 0); err != nil {
+		if err := d.send(cdj.KindRender, d.dmst, off, n, 0, count, 0); err != nil {
 			return nil, err
 		}
-		if m, err = d.read(); err != nil || m.kind != 0x4001 {
-			return nil, fmt.Errorf("render header 0x%04x %v", m.kind, err)
+		if m, err = cdj.DecodeDBMessage(d.c); err != nil || m.Kind != cdj.KindRenderHeader {
+			return nil, fmt.Errorf("render header 0x%04x %v", m.Kind, err)
 		}
 		for range n {
-			if m, err = d.read(); err != nil || m.kind != 0x4101 || len(m.nums) < 7 {
-				return nil, fmt.Errorf("render item 0x%04x %v", m.kind, err)
+			if m, err = cdj.DecodeDBMessage(d.c); err != nil || m.Kind != cdj.KindRenderItem {
+				return nil, fmt.Errorf("render item 0x%04x %v", m.Kind, err)
 			}
-			label := strings.Trim(m.text[3], "￺￻")
-			items = append(items, linkItem{ID: m.nums[1], Kind: m.nums[6], Label: label, Secondary: m.text[5]})
+			item, err := cdj.ParseMenuItem(m)
+			if err != nil {
+				return nil, fmt.Errorf("render item parse %v", err)
+			}
+			items = append(items, linkItem{ID: item.ID, Kind: item.Kind, Label: item.Label, Secondary: item.Secondary})
 		}
-		if m, err = d.read(); err != nil || m.kind != 0x4201 {
-			return nil, fmt.Errorf("render footer 0x%04x %v", m.kind, err)
+		if m, err = cdj.DecodeDBMessage(d.c); err != nil || m.Kind != cdj.KindRenderFooter {
+			return nil, fmt.Errorf("render footer 0x%04x %v", m.Kind, err)
 		}
 	}
-	d.s.log("Denon → CDJ", 12523, fmt.Sprintf("dbserver 0x%04x: %d items", kind, len(items)), nil)
+	d.s.log("Denon → CDJ", cdj.PortDBServer, fmt.Sprintf("dbserver 0x%04x: %d items", kind, len(items)), nil)
 	return items, nil
 }
 
@@ -281,13 +257,13 @@ func (s *sim) linkRoutes(mux *http.ServeMux) {
 		var items []linkItem
 		switch r.URL.Query().Get("q") {
 		case "root":
-			items, err = d.menu(0x1000, 0, 0xffffff)
+			items, err = d.menu(cdj.KindRootMenu, 0, 0xffffff)
 		case "tracks":
-			items, err = d.menu(0x1004, 0)
+			items, err = d.menu(cdj.KindAllTracks, 0)
 		case "folder":
-			items, err = d.menu(0x1105, 0, uint32(id), 1)
+			items, err = d.menu(cdj.KindPlaylist, 0, uint32(id), 1)
 		case "playlist":
-			items, err = d.menu(0x1105, 0, uint32(id), 0)
+			items, err = d.menu(cdj.KindPlaylist, 0, uint32(id), 0)
 		default:
 			err = fmt.Errorf("unknown menu")
 		}
@@ -328,7 +304,7 @@ func (s *sim) linkLoad(r *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	items, err := d.menu(0x2102, uint32(id))
+	items, err := d.menu(cdj.KindTrackInfo, uint32(id))
 	d.c.Close()
 	if err != nil || len(items) == 0 {
 		return nil, fmt.Errorf("track path: %v", err)

@@ -161,6 +161,27 @@ Broadcast on UDP 50001 on each beat while playing.
 
 ---
 
+## 4.2. UDP 50001 Absolute Position (Type `0x0b`, 60 bytes / `0x3c`)
+
+Sent to port 50001 every ~30–40 ms as long as a track is loaded (even when paused or scratching). Introduced on CDJ-3000 to enable real-time sub-beat playhead tracking without waiting for beat pulses or interpolating.
+
+| Offset | Size | Value / Meaning | Status |
+| --- | --- | --- | --- |
+| `0x00`–`0x09` | 10 | `Qspt1WmJOL` | **[Confirmed]** |
+| `0x0a` | 1 | Packet type `0x0b` | **[Confirmed]** |
+| `0x0b`–`0x1e` | 20 | Device name (`CDJ-3000`, NUL-padded) | **[Confirmed]** |
+| `0x1f` | 1 | Terminator `0x01` | **[Confirmed]** |
+| `0x20` | 1 | Subtype `0x00` | **[Confirmed]** |
+| `0x21` | 1 | Player number $D$ (1–6) | **[Confirmed]** |
+| `0x22`–`0x23` | 2 | Payload length `0x0018` (24 bytes = `0x3c - 0x24`) | **[Confirmed]** |
+| `0x24`–`0x27` | 4 | Track length in seconds (uint32 big-endian; `0xffffffff` if no track) | **[Confirmed]** |
+| `0x28`–`0x2b` | 4 | Playhead position in milliseconds (uint32 big-endian; `0xffffffff` if no track) | **[Confirmed]** |
+| `0x2c`–`0x2f` | 4 | Pitch adjustment: signed 32-bit integer, pitch percent $\times 100$ (e.g. +3.26% is `326`, -2.50% is `-250`) | **[Confirmed]** |
+| `0x30`–`0x37` | 8 | Padding `00 00 00 00 00 00 00 00` | **[Confirmed]** |
+| `0x38`–`0x3b` | 4 | Effective tempo: uint32 big-endian, effective BPM $\times 10$ (e.g. 120.2 BPM is `1202`; `0xffffffff` if unknown/no track) | **[Confirmed]** |
+
+---
+
 ## 5. UDP 50002 Media Query (`0x05`) & Media Response (`0x06`)
 
 Used to discover media attributes (name, date, track count, playlist count, capacity, free space) for a given slot.

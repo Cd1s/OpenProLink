@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Cd1s/OpenCDJ-3000/pkg/cdj"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/bridge"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/enginedb"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
@@ -43,6 +44,44 @@ func TestSimulatorReachesEngineX(t *testing.T) {
 	}
 	if seen.TrackID != s.tracks[0].ID || seen.Pitch != 3.125 || seen.Title == "" {
 		t.Fatalf("EngineX parsed %+v", seen)
+	}
+	if !seen.PrecisePosition {
+		t.Fatalf("EngineX did not receive or parse 0x0b PrecisePosition: %+v", seen)
+	}
+
+	// Verify MediaQuery (0x05) -> MediaResponse (0x06) to s.simIP:50002
+	queryConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: s.denonIP, Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP for media query failed: %v", err)
+	}
+	defer queryConn.Close()
+	_ = queryConn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	queryPkt := cdj.NewMediaQueryPacket(cdj.MediaQuery{
+		DeviceName:   "CDJ-3000",
+		PlayerNumber: 1,
+		ReplyIP:      s.denonIP,
+		TargetPlayer: 2,
+		TargetSlot:   cdj.SlotUSB,
+	})
+	if _, err := queryConn.WriteToUDP(queryPkt, &net.UDPAddr{IP: s.simIP, Port: 50002}); err != nil {
+		t.Fatalf("WriteToUDP media query failed: %v", err)
+	}
+
+	respBuf := make([]byte, 512)
+	n, _, err := queryConn.ReadFromUDP(respBuf)
+	if err != nil {
+		t.Fatalf("ReadFromUDP media response failed: %v", err)
+	}
+	resp, err := cdj.ParseMediaResponsePacket(respBuf[:n])
+	if err != nil {
+		t.Fatalf("ParseMediaResponsePacket failed: %v", err)
+	}
+	if resp.TrackCount != uint16(len(s.tracks)) {
+		t.Fatalf("Media response TrackCount = %d, want %d", resp.TrackCount, len(s.tracks))
+	}
+	if resp.MediaName != "OPENCDJ-USB" {
+		t.Fatalf("Media response MediaName = %q, want OPENCDJ-USB", resp.MediaName)
 	}
 
 	out, err := s.stage(t.Context())

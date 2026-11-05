@@ -33,13 +33,15 @@ type Device struct {
 	PacketType               byte   `json:"packet_type"`
 	TrackID                  uint32 `json:"track_id,omitempty"`
 	SourcePlayer, SourceSlot byte
-	LastSeen                 time.Time       `json:"last_seen"`
-	BPM                      float64         `json:"bpm,omitempty"`
-	Pitch                    float64         `json:"pitch,omitempty"`
-	EffectiveBPM             float64         `json:"effective_bpm,omitempty"`
-	Beat                     uint32          `json:"beat,omitempty"`
-	BeatInBar                byte            `json:"beat_in_bar,omitempty"`
-	PlayPositionMS           uint32          `json:"play_position_ms,omitempty"`
+	LastSeen                 time.Time `json:"last_seen"`
+	BPM                      float64   `json:"bpm,omitempty"`
+	Pitch                    float64   `json:"pitch,omitempty"`
+	EffectiveBPM             float64   `json:"effective_bpm,omitempty"`
+	Beat                     uint32    `json:"beat,omitempty"`
+	BeatInBar                byte      `json:"beat_in_bar,omitempty"`
+	PlayPositionMS           uint32    `json:"play_position_ms,omitempty"`
+	PrecisePosition          bool      `json:"precise_position,omitempty"`
+	lastPrecise              time.Time
 	Playing                  bool            `json:"playing,omitempty"`
 	OnAir                    bool            `json:"on_air,omitempty"`
 	Master                   bool            `json:"master,omitempty"`
@@ -78,6 +80,30 @@ func ParsePacket(b []byte, port int, remote net.IP) (Device, error) {
 			return d, fmt.Errorf("prolink: truncated announcement")
 		}
 		d.Number = b[0x24]
+	case port == 50001 && b[10] == 0x0b:
+		if len(b) < 0x3c {
+			return d, fmt.Errorf("prolink: truncated absolute position packet")
+		}
+		d.Number = b[0x21]
+		trackLen := binary.BigEndian.Uint32(b[0x24:0x28])
+		if trackLen > 0 && trackLen != 0xffffffff {
+			d.DurationMS = trackLen * 1000
+		}
+		playhead := binary.BigEndian.Uint32(b[0x28:0x2c])
+		if playhead != 0xffffffff {
+			d.PlayPositionMS = playhead
+			d.PrecisePosition = true
+			d.lastPrecise = d.LastSeen
+		}
+		rawPitch := int32(binary.BigEndian.Uint32(b[0x2c:0x30]))
+		d.Pitch = float64(rawPitch) / 100.0
+		rawBPM := binary.BigEndian.Uint32(b[0x38:0x3c])
+		if rawBPM > 0 && rawBPM != 0xffffffff {
+			d.EffectiveBPM = float64(rawBPM) / 10.0
+			if 1+d.Pitch/100 > 0 {
+				d.BPM = d.EffectiveBPM / (1 + d.Pitch/100)
+			}
+		}
 	case port == 50001 && b[10] == 0x28:
 		if len(b) < 0x60 {
 			return d, fmt.Errorf("prolink: truncated beat packet")
@@ -455,8 +481,9 @@ func (d *Discovery) Observe(device Device) Device {
 			// Beat packets carry tempo/bar phase, not status flags or track position.
 			device.Master, device.Sync, device.OnAir = old.Master, old.Sync, old.OnAir
 			device.Beat, device.PlayPositionMS = old.Beat, old.PlayPositionMS
+			device.PrecisePosition, device.lastPrecise = old.PrecisePosition, old.lastPrecise
 		}
-		if device.PacketType == 6 || device.PacketType == 0x28 {
+		if device.PacketType == 6 || device.PacketType == 0x28 || device.PacketType == 0x0b {
 			if device.TrackID == 0 {
 				device.TrackID = old.TrackID
 			}
@@ -481,6 +508,39 @@ func (d *Discovery) Observe(device Device) Device {
 			if device.DurationMS == 0 {
 				device.DurationMS = old.DurationMS
 			}
+		}
+		if device.PacketType == 0x0b {
+			device.Master, device.Sync, device.OnAir = old.Master, old.Sync, old.OnAir
+			if device.Beat == 0 {
+				device.Beat = old.Beat
+			}
+			if device.BeatInBar == 0 {
+				device.BeatInBar = old.BeatInBar
+			}
+			if !device.Playing {
+				device.Playing = old.Playing
+			}
+			if !device.Sync {
+				device.Sync = old.Sync
+			}
+			if old.BPM > 0 {
+				device.BPM = old.BPM
+			}
+			if device.EffectiveBPM == 0 {
+				device.EffectiveBPM = old.EffectiveBPM
+			}
+			if !device.PrecisePosition {
+				device.PlayPositionMS = old.PlayPositionMS
+				device.PrecisePosition = old.PrecisePosition
+				device.lastPrecise = old.lastPrecise
+			} else {
+				device.lastPrecise = device.LastSeen
+			}
+		}
+		if device.PacketType != 0x0b && old.PrecisePosition && now.Sub(old.lastPrecise) <= time.Second && (device.TrackID == 0 || old.TrackID == 0 || device.TrackID == old.TrackID) {
+			device.PlayPositionMS = old.PlayPositionMS
+			device.PrecisePosition = true
+			device.lastPrecise = old.lastPrecise
 		}
 		if device.PacketType == 6 {
 			if device.BPM == 0 {
@@ -615,7 +675,7 @@ func (d *Discovery) Observe(device Device) Device {
 		}
 	}
 
-	if len(device.Beats) > 0 && device.Beat > 0 && int(device.Beat-1) < len(device.Beats) && device.PlayPositionMS == 0 {
+	if !device.PrecisePosition && len(device.Beats) > 0 && device.Beat > 0 && int(device.Beat-1) < len(device.Beats) && device.PlayPositionMS == 0 {
 		device.PlayPositionMS = device.Beats[device.Beat-1].TimeMS
 	}
 

@@ -240,7 +240,7 @@ async function refresh() {
 
   const d = state.denon;
   $('denon-empty').hidden = d.length > 0;
-  $('denon').innerHTML = d.map(x => `<tr><td>${x.number}</td><td>${esc(x.name)}</td><td>${esc(x.title || (x.track_id ? '#' + x.track_id : ''))}</td><td>${x.effective_bpm ? x.effective_bpm.toFixed(2) : ''}</td><td>${x.pitch ? x.pitch.toFixed(2) + '%' : '0%'}</td><td>${x.beat ?? ''} ${x.beat_in_bar ? '(' + x.beat_in_bar + ')' : ''}</td><td>${[x.playing && 'PLAY', x.master && 'MASTER', x.sync && 'SYNC', x.on_air && 'ON AIR'].filter(Boolean).join(' ')}</td><td>${x.waveform_columns}/${x.beat_points}</td></tr>`).join('');
+  $('denon').innerHTML = d.map(x => `<tr><td>${x.number}</td><td>${esc(x.name)}</td><td>${esc(x.title || (x.track_id ? '#' + x.track_id : ''))}</td><td>${x.effective_bpm ? x.effective_bpm.toFixed(2) : ''}</td><td>${x.pitch ? x.pitch.toFixed(2) + '%' : '0%'}</td><td>${x.beat ?? ''} ${x.beat_in_bar ? '(' + x.beat_in_bar + ')' : ''}</td><td>${[x.playing && 'PLAY', x.master && 'MASTER', x.sync && 'SYNC', x.on_air && 'ON AIR', x.precise_position && '0x0b'].filter(Boolean).join(' ')}</td><td>${x.waveform_columns}/${x.beat_points}</td></tr>`).join('');
   const seen = d.find(x => x.track_id && x.waveform_columns);
   if (seen) {
     const key = `${seen.number}:${seen.track_id}`;

@@ -15,7 +15,6 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -32,6 +31,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/Cd1s/OpenCDJ-3000/pkg/cdj"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/bridge"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/enginedb"
 	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
@@ -102,6 +102,7 @@ func main() {
 		log.Fatal(err)
 	}
 	s.denonEmpty = *denonEmpty
+	s.playing = true
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := s.start(ctx); err != nil {
@@ -228,8 +229,16 @@ func (s *sim) start(ctx context.Context) error {
 	s.discovery = prolink.NewDiscovery()
 	s.discovery.SetMediaCache(&prolink.MediaCache{Dir: s.cache, Portmap: s.nfs.PortmapPort()})
 	listening := make(chan error, 1)
+	var lastParsedPosLog time.Time
 	go func() {
 		listening <- s.discovery.Listen(ctx, s.denonIP, func(d prolink.Device) {
+			if d.PacketType == cdj.TypeAbsolutePosition {
+				now := time.Now()
+				if !lastParsedPosLog.IsZero() && now.Sub(lastParsedPosLog) < time.Second {
+					return
+				}
+				lastParsedPosLog = now
+			}
 			s.log("Denon parsed", 0, fmt.Sprintf("type 0x%02x player %d %s", d.PacketType, d.Number, d.Title), nil)
 		})
 	}()
@@ -279,7 +288,7 @@ func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 	}
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
-	var lastKeep, lastStatus time.Time
+	var lastKeep, lastStatus, lastPos, lastPosLog time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -291,13 +300,26 @@ func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 			n, keep := s.number, s.keepNow || now.Sub(lastKeep) >= 1500*time.Millisecond
 			s.keepNow = false
 			status := now.Sub(lastStatus) >= 200*time.Millisecond
-			var beatPkt, statusPkt []byte
+			pos := now.Sub(lastPos) >= 30*time.Millisecond
+			var beatPkt, statusPkt, posPkt []byte
 			if s.playing && beat != s.lastBeat {
 				beatPkt = s.beatPacket(bib)
 			}
 			s.lastBeat = beat
 			if status {
 				statusPkt = s.statusPacket(beat, bib)
+			}
+			if pos && len(s.tracks) > 0 {
+				durSec := uint32(s.tracks[s.cur].DurationMS / 1000)
+				posPkt = cdj.NewAbsolutePositionPacket(cdj.AbsolutePosition{
+					DeviceName:     "CDJ-3000",
+					PlayerNumber:   n,
+					TrackLengthSec: durSec,
+					PlayheadMS:     uint32(math.Round(s.posMS)),
+					HasPlayhead:    true,
+					Pitch:          s.pitch,
+					EffectiveBPM:   s.bpm() * (1 + s.pitch/100),
+				})
 			}
 			s.mu.Unlock()
 			if keep {
@@ -309,6 +331,15 @@ func (s *sim) run(ctx context.Context, conn *net.UDPConn) {
 					}
 				}
 				lastKeep = now
+			}
+			if posPkt != nil {
+				if _, err := conn.WriteToUDP(posPkt, &net.UDPAddr{IP: s.denonIP, Port: 50001}); err == nil {
+					if lastPosLog.IsZero() || now.Sub(lastPosLog) >= time.Second {
+						s.log("CDJ → Denon", 50001, "absolute pos 0x0b", posPkt)
+						lastPosLog = now
+					}
+				}
+				lastPos = now
 			}
 			if beatPkt != nil {
 				send(50001, "beat 0x28", beatPkt)
@@ -353,73 +384,66 @@ func (s *sim) bpm() float64 {
 	return 120
 }
 
-func pitchWord(pct float64) uint32 { return uint32(math.Round(0x100000 * (1 + pct/100))) }
-
-func header(kind byte, size, nameAt int, number byte) []byte {
-	b := make([]byte, size)
-	copy(b, "Qspt1WmJOL")
-	b[10] = kind
-	copy(b[nameAt:nameAt+20], "CDJ-3000")
-	b[nameAt+20] = 1
-	if nameAt == 12 {
-		b[0x21] = 2
-		binary.BigEndian.PutUint16(b[0x22:], uint16(size))
-		b[0x24] = number
-	} else {
-		b[0x21] = number
-		binary.BigEndian.PutUint16(b[0x22:], uint16(size-0x24))
-	}
-	return b
-}
+func pitchWord(pct float64) uint32 { return cdj.PitchToWord(pct) }
 
 func keepalivePacket(number byte, ip net.IP) []byte {
-	b := header(6, 54, 12, number)
-	b[0x25] = 1
-	copy(b[0x26:], []byte{2, 0, 0, 0, 0, 0x20}) // fixed: a real CDJ keeps its MAC when its number changes
-	copy(b[0x2c:], ip.To4())
-	b[0x30] = 2
-	b[0x34] = 1
-	return b
+	return cdj.NewKeepalivePacket(cdj.Keepalive{
+		DeviceName:      "CDJ-3000",
+		PlayerNumber:    number,
+		FirstDeviceFlag: 1,
+		MAC:             net.HardwareAddr{2, 0, 0, 0, 0, 0x20}, // fixed: a real CDJ keeps its MAC when its number changes
+		IP:              ip,
+		PeerCount:       2,
+		DeviceClass:     1,
+		ModelCapability: 0,
+	})
 }
 
 func (s *sim) statusPacket(beat uint32, bib byte) []byte {
-	n := s.number
-	b := header(0x0a, 0x200, 11, n)
-	b[0x20] = 6
-	b[0x24] = n
-	b[0x26], b[0x27] = 1, 1
-	b[0x28], b[0x29], b[0x2a] = n, 3, 1 // track from this player's USB, rekordbox
-	binary.BigEndian.PutUint32(b[0x2c:], s.tracks[s.cur].ID)
-	b[0x6a], b[0x6b], b[0x73], b[0x75] = 4, 4, 4, 1
-	b[0x7b] = 5 // P1 paused
-	b[0x89] = 0xb8
-	b[0x8b] = 0xfe
-	if s.playing {
-		b[0x7b], b[0x89], b[0x8b] = 3, 0xf8, 0xfa
-	}
-	copy(b[0x7c:], "3.20")
-	for _, off := range []int{0x8c, 0x98, 0xc0, 0xc4} {
-		binary.BigEndian.PutUint32(b[off:], pitchWord(s.pitch))
-	}
-	binary.BigEndian.PutUint16(b[0x90:], 0x8000)
-	binary.BigEndian.PutUint16(b[0x92:], uint16(math.Round(s.bpm()*100)))
-	b[0x9f] = 0xff
-	binary.BigEndian.PutUint32(b[0xa0:], beat)
-	b[0xa6] = bib
-	b[0xb7] = 1
-	return b
+	return cdj.NewCDJ3000StatusPacket(cdj.Status{
+		DeviceName:        "CDJ-3000",
+		PlayerNumber:      s.number,
+		PacketVersion:     6,
+		Active:            s.playing,
+		TrackSourcePlayer: s.number,
+		TrackSourceSlot:   cdj.SlotUSB,
+		TrackType:         cdj.TrackTypeRekordbox,
+		TrackID:           s.tracks[s.cur].ID,
+		USBPresent:        true,
+		USBLocalState:     0,
+		SDLocalState:      4,
+		LinkAvailable:     true,
+		PlayState1:        cdj.PlayState1Paused,
+		Firmware:          "3.20",
+		Playing:           s.playing,
+		Master:            true,
+		Sync:              false,
+		OnAir:             true,
+		PlayState2:        0xfe,
+		Pitch:             s.pitch,
+		BPM:               s.bpm(),
+		Beat:              beat,
+		BeatWithinBar:     bib,
+		MediaPresence:     1,
+		WaveformColor:     4,
+	})
 }
 
 func (s *sim) beatPacket(bib byte) []byte {
-	b := header(0x28, 0x60, 11, s.number)
 	ms := 60000 / (s.bpm() * (1 + s.pitch/100))
-	for i, beats := range []float64{1, 2, float64(5 - bib), 4, float64(9 - bib), 8} {
-		binary.BigEndian.PutUint32(b[0x24+4*i:], uint32(beats*ms))
-	}
-	binary.BigEndian.PutUint32(b[0x54:], pitchWord(s.pitch))
-	binary.BigEndian.PutUint16(b[0x5a:], uint16(math.Round(s.bpm()*100)))
-	b[0x5c] = bib
-	return b
+	return cdj.NewBeatPacket(cdj.Beat{
+		DeviceName:    "CDJ-3000",
+		PlayerNumber:  s.number,
+		NextBeatMS:    uint32(1 * ms),
+		SecondBeatMS:  uint32(2 * ms),
+		NextBarMS:     uint32(float64(5-bib) * ms),
+		FourthBeatMS:  uint32(4 * ms),
+		SecondBarMS:   uint32(float64(9-bib) * ms),
+		EighthBeatMS:  uint32(8 * ms),
+		Pitch:         s.pitch,
+		BPM:           s.bpm(),
+		BeatWithinBar: bib,
+	})
 }
 
 // stage is #59 end to end: copy the CDJ's USB over NFS onto the Denon drive,
