@@ -1,0 +1,25 @@
+name: Hardware capture (CDJ / XDJ / DJM)
+description: Share a capture from real Pro DJ Link hardware
+title: "Hardware capture: "
+labels: [hardware]
+body:
+  - type: textarea
+    id: devices
+    attributes:
+      label: Devices and connection
+      description: List models, firmware, player numbers and how they are connected.
+    validations:
+      required: true
+  - type: textarea
+    id: actions
+    attributes:
+      label: Actions and approximate times
+    validations:
+      required: true
+  - type: textarea
+    id: reports
+    attributes:
+      label: Capture reports
+      description: Review both files for private information before attaching them. IP and MAC fields are replaced, but other data can remain.
+    validations:
+      required: true

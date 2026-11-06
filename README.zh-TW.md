@@ -17,6 +17,17 @@ OpenProLink 有兩個工具：
 
 ## 用 prolink-probe 擷取你的設備
 
+### 方式一：下載預編譯套件（無需安裝 Go）
+
+下載 [Windows 64 位元](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-windows-amd64.zip)、[macOS Apple Silicon](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-macos-arm64.zip)、[macOS Intel](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-macos-amd64.zip)、[Linux x86-64](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-linux-amd64.tar.gz) 或 [Linux ARM64](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-linux-arm64.tar.gz)。
+
+1. 使用網路線或同一交換器、路由器，讓電腦和 CDJ / XDJ / DJM 位於同一區域網路，並退出其他 Pro DJ Link 軟體。
+2. 解壓縮後，Windows 連按兩下 `run-capture.bat`，macOS 連按兩下 `run-capture.command`；macOS 或 Linux 也可在終端機執行 `./prolink-probe -duration 45s -out prolink-report.md -json prolink-samples.json`。
+3. 在 45 秒內載入 USB 歌曲，操作 PLAY、CUE、MASTER、BEAT SYNC 和 Pitch 滑桿；若有 DJM，推拉各聲道推桿和橫推，切換 Beat FX、調整 FX Time 和 Level，並切換一次 ON/OFF。每次操作一項，記下大致時間。
+4. 檢查解壓縮目錄中的 `prolink-report.md` 和 `prolink-samples.json`，再將兩者附到 [Hardware Capture Issue](https://github.com/Cd1s/OpenProLink/issues/new?template=hardware-capture.yml)，註明型號、韌體和操作時間。已知 IP/MAC 欄位會替換，但其他隱私資訊可能保留，請參閱下方隱私說明。
+
+### 方式二：從原始碼執行
+
 徵集：**CDJ-3000、CDJ-2000NXS2、XDJ-AZ、XDJ-XZ、DJM-A9、DJM-V10、DJM-900NXS2**，以及其他任何 Pro DJ Link 播放機和混音台。
 
 1. 電腦和設備接到同一台交換器或路由器上（XDJ-XZ / XDJ-AZ 也可以直接接機身的 LAN 埠）。先關閉 rekordbox 等 Pro DJ Link 軟體，它們會佔用同樣的連接埠。

@@ -19,6 +19,17 @@ It was built for [EngineX OS](https://github.com/Cd1s/EngineX-OS), the custom sy
 
 Wanted: **CDJ-3000, CDJ-2000NXS2, XDJ-AZ, XDJ-XZ, DJM-A9, DJM-V10, DJM-900NXS2**, and any other Pro DJ Link player or mixer.
 
+### Method 1: Download a prebuilt package
+
+No Go installation is needed. Download [Windows 64-bit](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-windows-amd64.zip), [macOS Apple Silicon](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-macos-arm64.zip), [macOS Intel](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-macos-amd64.zip), [Linux x86-64](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-linux-amd64.tar.gz), or [Linux ARM64](https://github.com/Cd1s/OpenProLink/releases/latest/download/OpenProLink-v0.1.0-linux-arm64.tar.gz).
+
+1. Connect the computer and CDJ / XDJ / DJM devices by Ethernet, or to the same switch or router. Quit other Pro DJ Link software.
+2. Extract the archive. On Windows, double-click `run-capture.bat`; on macOS, double-click `run-capture.command`. On macOS or Linux you can also run `./prolink-probe -duration 45s -out prolink-report.md -json prolink-samples.json` in a terminal.
+3. During the 45 seconds, load a USB track and use PLAY, CUE, MASTER, BEAT SYNC and the pitch fader. On a DJM, move each channel fader and the crossfader, change Beat FX, adjust FX Time and Level, and toggle ON/OFF. Perform actions one at a time and note their approximate times.
+4. Review `prolink-report.md` and `prolink-samples.json` in the extracted folder, then attach both to a [Hardware Capture Issue](https://github.com/Cd1s/OpenProLink/issues/new?template=hardware-capture.yml) with your models, firmware and action times. Known IP and MAC fields are replaced, but other private data can remain; see Privacy below.
+
+### Method 2: Run from source
+
 1. Connect your computer to the same switch or router as the devices (or to the LAN port of an XDJ-XZ / XDJ-AZ). Quit rekordbox and any other Pro DJ Link software, which hold the same ports.
 2. Install [Go](https://go.dev/dl/) 1.26 or newer, then run from a checkout of this repository:
 

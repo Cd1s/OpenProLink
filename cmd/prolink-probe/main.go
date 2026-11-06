@@ -1137,11 +1137,15 @@ func run() error {
 	cfg := defaultConfig()
 	flag.DurationVar(&cfg.Duration, "duration", cfg.Duration, "capture duration (60s gives time to work the controls)")
 	out := flag.String("out", "capture.json", "output JSON report")
+	jsonOut := flag.String("json", "", "write JSON samples here and a Markdown summary to -out")
 	flag.BoolVar(&cfg.Passive, "passive", false, "only listen: do not announce a virtual player or query devices (players then send far less)")
 	number := flag.Int("number", 0, "virtual player number to announce (default: first free from 7 to 15)")
 	flag.StringVar(&cfg.Iface, "iface", "", "network interface to announce on (default: the one on the devices' subnet)")
 	flag.IntVar(&cfg.Samples, "samples", cfg.Samples, "raw hex samples kept per packet kind (at most one per second)")
 	flag.Parse()
+	if *jsonOut != "" && *jsonOut == *out {
+		return fmt.Errorf("-out and -json must name different files")
+	}
 	if cfg.Duration <= cfg.Prelisten && !cfg.Passive || cfg.Duration <= 0 {
 		return fmt.Errorf("-duration must be longer than %s", cfg.Prelisten)
 	}
@@ -1162,8 +1166,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(*out, append(data, '\n'), 0o644); err != nil {
+	jsonPath := *out
+	if *jsonOut != "" {
+		jsonPath = *jsonOut
+	}
+	if err := os.WriteFile(jsonPath, append(data, '\n'), 0o644); err != nil {
 		return err
+	}
+	if *jsonOut != "" {
+		var summary bytes.Buffer
+		summary.WriteString("# Pro DJ Link capture\n\n```text\n")
+		r.summary(&summary)
+		summary.WriteString("```\n\nReview the JSON samples for private data before sharing.\n")
+		if err := os.WriteFile(*out, summary.Bytes(), 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s; review it before attaching it to an issue\n", jsonPath)
 	}
 	r.summary(os.Stderr)
 	fmt.Fprintf(os.Stderr, "wrote %s; review it before attaching it to an issue\n", *out)
