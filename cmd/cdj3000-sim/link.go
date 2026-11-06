@@ -17,12 +17,11 @@ import (
 	"net/http"
 	"path"
 	"strconv"
-	"syscall"
 	"time"
 
-	"github.com/Cd1s/OpenCDJ-3000/pkg/cdj"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/rekordbox"
+	"github.com/Cd1s/OpenProLink/pkg/cdj"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/prolink"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/rekordbox"
 )
 
 // exportIP is where the Denon export runs. The Exporter only takes an address
@@ -48,7 +47,7 @@ func (s *sim) listenDenon(ctx context.Context, port int) error {
 	if s.deck != nil {
 		// A real deck broadcasts keepalives and may broadcast beats; on macOS only a
 		// wildcard socket sees broadcasts, and it shares the port with EngineX's receiver.
-		addr, lc.Control = net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), reusePort
+		addr, lc.Control = net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), cdj.ReusePort
 	}
 	pc, err := lc.ListenPacket(ctx, "udp4", addr)
 	if err != nil {
@@ -513,17 +512,4 @@ func (s *sim) watchDeckLead(ctx context.Context) {
 			}
 		}
 	}
-}
-
-// reusePort lets a wildcard socket share a port with one bound to a single address.
-func reusePort(network, address string, c syscall.RawConn) error {
-	var err error
-	if cerr := c.Control(func(fd uintptr) {
-		if err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err == nil {
-			err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1)
-		}
-	}); cerr != nil {
-		return cerr
-	}
-	return err
 }

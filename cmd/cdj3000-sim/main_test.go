@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Cd1s/OpenCDJ-3000/pkg/cdj"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/bridge"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/enginedb"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
+	"github.com/Cd1s/OpenProLink/pkg/cdj"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/bridge"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/enginedb"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/prolink"
 )
 
 // Own loopback addresses: pkg/prolink's tests hold 127.0.0.1:50000-50002.

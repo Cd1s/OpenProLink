@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/testfixture"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/testfixture"
 )
 
 // drumTrack synthesizes 32 bars of 120 BPM drums (intro, groove, breakdown with

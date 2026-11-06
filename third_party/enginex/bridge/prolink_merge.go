@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/prolink"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/rekordbox"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/prolink"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/rekordbox"
 )
 
 // stagedIDBits keeps staged IDs stable across imports: library k (in name

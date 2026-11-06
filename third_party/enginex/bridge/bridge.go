@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/compat"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/enginedb"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/rekordbox"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/compat"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/enginedb"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/rekordbox"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )

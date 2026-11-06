@@ -1,8 +1,10 @@
-# OpenCDJ-3000 architecture
+# OpenProLink architecture
 
 ## Goal
 
 A virtual player that a Pro DJ Link implementation can be tested against without hardware: it plays the CDJ side, the device under test plays its own side, and the browser shows both sides plus the wire.
+
+`cmd/prolink-probe` is the other half: it records real players and mixers (see the README), so the simulator can be checked against captures instead of our own reading of the analysis.
 
 Today the device under test is EngineX OS (Denon / Numark decks): CDJ → Denon (#51 live waveforms, #59 USB import) and Denon → CDJ (#63 export, on hold upstream until a real CDJ is available).
 
@@ -32,6 +34,7 @@ Today the device under test is EngineX OS (Denon / Numark decks): CDJ → Denon 
 | Generated USB stick | `cmd/cdj3000-sim/fixture.go` | 64 s of drums at 120 BPM; audio, PQTZ, PWV5 and PWV7 come from the same synthesized bands |
 | Reverse link, media query reply, collision watch | `cmd/cdj3000-sim/link.go` | Uses `pkg/cdj` dbserver client and replies `0x06` to incoming `0x05` media queries |
 | Web UI | `cmd/cdj3000-sim/index.html` | No build step, no external assets |
+| Hardware capture | `cmd/prolink-probe/main.go` | Pre-listen, free number 7–15, keepalive every second, `0x05` media queries and dbserver root menu per player, per-stream rates, hex samples and byte-change map; IP/MAC redaction only where the protocol keeps addresses |
 | Device under test | `third_party/enginex/` | Synced by `scripts/sync-enginex.sh`; `VERSION` records the source commit |
 
 ## HTTP API
@@ -50,7 +53,7 @@ Today the device under test is EngineX OS (Denon / Numark decks): CDJ → Denon 
 ## Test strategy
 
 1. **Independent sides.** The simulator's packet builders and dbserver client are written from Deep Symmetry's analysis, not shared with the device's code. A shared encoder would make both sides agree on the same mistake.
-2. **Loopback only.** Everything binds to 127.0.0.x. Nothing is announced on a real LAN, where a stray player number could confuse players in a club. A future LAN mode must be opt-in and passive by default.
+2. **Loopback by default.** The simulator binds to 127.0.0.x unless `-deck` names a real deck. `prolink-probe` must announce to get unicast traffic, so it takes a number no player uses (7–15), sends no status, beat or control packets, and yields its number on a conflict; `-passive` sends nothing.
 3. **Evidence over agreement.** A green run proves only that both sides agree. Real-hardware captures (Deep Symmetry's pcaps, and our own once we have a player) are the reference. A test that contradicts a capture is wrong.
 4. **Tests** live next to the code (`cmd/cdj3000-sim/main_test.go`): the device sees a playing CDJ-3000 with NFS waveform and beatgrid, the #59 import builds the `[Pro DJ Link: CDJ-3000]` folder, #63 browse and load work, and the export yields 4 → 3. They use their own loopback addresses so they can run beside the device's own tests.
 

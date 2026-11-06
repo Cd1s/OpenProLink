@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/compat"
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/rekordbox"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/compat"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/rekordbox"
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )

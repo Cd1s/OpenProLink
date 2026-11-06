@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Cd1s/OpenCDJ-3000/third_party/enginex/rekordbox"
+	"github.com/Cd1s/OpenProLink/third_party/enginex/rekordbox"
 )
 
 // Camelot accepts wheel notation and common musical key spellings.

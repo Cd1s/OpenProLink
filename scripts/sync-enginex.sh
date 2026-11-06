@@ -1,13 +1,13 @@
 #!/bin/sh
 # Refreshes third_party/enginex from an EngineX OS checkout: the receiver,
-# exporter and library code OpenCDJ-3000 tests against. Copies sources only (no
+# exporter and library code OpenProLink tests against. Copies sources only (no
 # tests) and rewrites import paths; never edit the copy, fix it upstream.
 #   sh scripts/sync-enginex.sh <path to EngineX OS checkout>
 set -eu
 SRC=${1:?path to an EngineX OS checkout}
 DST=third_party/enginex
 OLD=github.com/Cd1s/EngineX-OS
-NEW=github.com/Cd1s/OpenCDJ-3000/third_party/enginex
+NEW=github.com/Cd1s/OpenProLink/third_party/enginex
 [ -f "$SRC/go.mod" ] && grep -q "^module $OLD\$" "$SRC/go.mod" || { echo "$SRC is not EngineX OS" >&2; exit 2; }
 rm -rf "$DST"
 for pkg in pkg/prolink pkg/rekordbox pkg/compat pkg/enginedb pkg/bridge internal/testfixture; do
